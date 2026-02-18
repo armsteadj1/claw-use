@@ -62,7 +62,7 @@ struct RawAXNode: Codable {
     let roleDescription: String?
     let title: String?
     let value: AnyCodable?
-    let description: String?
+    let axDescription: String?
     let identifier: String?
     let placeholder: String?
     let position: Position?

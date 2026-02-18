@@ -96,7 +96,7 @@ struct AXTreeWalker {
             roleDescription: roleDescription,
             title: title,
             value: value,
-            description: desc,
+            axDescription: desc,
             identifier: identifier,
             placeholder: placeholder,
             position: position,

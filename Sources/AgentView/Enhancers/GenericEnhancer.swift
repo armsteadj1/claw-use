@@ -81,10 +81,40 @@ struct GenericEnhancer: AppEnhancer {
             return result
         }
 
+        // For WebArea (Electron/browser content): recurse DEEP to extract all meaningful content
+        if role == "AXWebArea" {
+            let webContent = collectWebContent(node)
+            if !webContent.isEmpty {
+                // Create a synthetic section-level node with the extracted content as children
+                let webSection = RawAXNode(
+                    role: "AXWebArea",
+                    roleDescription: node.roleDescription,
+                    title: node.title,
+                    value: node.value,
+                    axDescription: node.axDescription,
+                    identifier: node.identifier,
+                    placeholder: node.placeholder,
+                    position: node.position,
+                    size: node.size,
+                    enabled: node.enabled,
+                    focused: node.focused,
+                    selected: node.selected,
+                    url: node.url,
+                    actions: node.actions,
+                    children: webContent,
+                    childCount: webContent.count,
+                    domId: node.domId,
+                    domClasses: node.domClasses
+                )
+                result.append(webSection)
+            }
+            return result
+        }
+
         // If this is a section-level container, add it directly
         let sectionRoles: Set<String> = [
             "AXToolbar", "AXTabGroup", "AXTable", "AXList", "AXOutline",
-            "AXSheet", "AXDialog", "AXPopover", "AXWebArea",
+            "AXSheet", "AXDialog", "AXPopover",
         ]
         if sectionRoles.contains(role) {
             result.append(node)
@@ -105,15 +135,80 @@ struct GenericEnhancer: AppEnhancer {
             }
         }
 
-        // If this is a group with title, treat as a section container
-        if role == "AXGroup" && node.title != nil {
-            result.append(node)
-            return result
+        // Groups with titles: keep them as labels but ALSO recurse into children
+        // (Electron apps wrap content in titled groups far above the actual WebArea)
+        if role == "AXGroup" && node.title != nil && !node.title!.isEmpty {
+            // Only keep as a leaf if it has no deeper meaningful content
+            let hasDeepContent = node.children.contains(where: { hasWebArea($0) || hasMeaningfulContent($0) })
+            if !hasDeepContent {
+                result.append(node)
+                return result
+            }
+            // Otherwise fall through to recurse
         }
 
         // Otherwise recurse into children
         for child in node.children {
             result.append(contentsOf: collectMeaningfulNodes(child))
+        }
+
+        return result
+    }
+
+    /// Check if any descendant contains a WebArea
+    private func hasWebArea(_ node: RawAXNode) -> Bool {
+        if node.role == "AXWebArea" { return true }
+        return node.children.contains(where: { hasWebArea($0) })
+    }
+
+    /// Check if a node or its descendants have meaningful interactive content
+    private func hasMeaningfulContent(_ node: RawAXNode) -> Bool {
+        if let role = node.role, RefAssigner.interactiveRoles.contains(role) { return true }
+        if node.role == "AXStaticText", let val = node.value?.value as? String, !val.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, val != "\u{200b}" { return true }
+        return node.children.contains(where: { hasMeaningfulContent($0) })
+    }
+
+    /// Recursively extract meaningful content from inside a WebArea (Electron/browser)
+    private func collectWebContent(_ node: RawAXNode) -> [RawAXNode] {
+        var result: [RawAXNode] = []
+        guard let role = node.role else { return result }
+
+        // Keep interactive elements
+        if RefAssigner.interactiveRoles.contains(role) {
+            result.append(node)
+            return result
+        }
+
+        // Keep static text with real content (not just zero-width spaces)
+        if role == "AXStaticText" {
+            if let val = node.value?.value as? String, !val.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               val != "\u{200b}" {
+                result.append(node)
+                return result
+            }
+        }
+
+        // Keep headings
+        if role == "AXHeading" {
+            result.append(node)
+            return result
+        }
+
+        // Keep images with descriptions
+        if role == "AXImage" && (node.title != nil || node.axDescription != nil) {
+            result.append(node)
+            return result
+        }
+
+        // Keep lists and tables
+        if ["AXTable", "AXList", "AXOutline"].contains(role) {
+            result.append(node)
+            return result
+        }
+
+        // Recurse into everything else
+        for child in node.children {
+            result.append(contentsOf: collectWebContent(child))
         }
 
         return result

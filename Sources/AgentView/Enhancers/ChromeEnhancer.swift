@@ -110,7 +110,7 @@ struct ChromeEnhancer: AppEnhancer {
 
     func extractURL(from node: RawAXNode) -> String? {
         if node.role == "AXTextField" || node.role == "AXComboBox" {
-            if let desc = node.description?.lowercased(),
+            if let desc = node.axDescription?.lowercased(),
                desc.contains("address") || desc.contains("url") || desc.contains("search")
             {
                 return node.value?.value as? String

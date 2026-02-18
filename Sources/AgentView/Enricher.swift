@@ -140,7 +140,7 @@ struct Pruner {
 
         // Keep images with titles or descriptions
         if role == "AXImage" {
-            if node.title != nil || node.description != nil { return true }
+            if node.title != nil || node.axDescription != nil { return true }
         }
 
         // Keep groups with titles (section containers)
@@ -284,8 +284,13 @@ struct Grouper {
 
             // Add this node and its meaningful children
             currentElements.append(node)
-            let pruned = node.children.flatMap { Pruner.prune($0) }
-            currentElements.append(contentsOf: pruned)
+            // For WebArea nodes, children are already pre-extracted meaningful content
+            if node.role == "AXWebArea" {
+                currentElements.append(contentsOf: node.children)
+            } else {
+                let pruned = node.children.flatMap { Pruner.prune($0) }
+                currentElements.append(contentsOf: pruned)
+            }
         }
 
         // Flush remaining
@@ -322,8 +327,12 @@ struct Grouper {
             if currentLabel == nil { currentLabel = node.title }
 
             currentElements.append(node)
-            let pruned = node.children.flatMap { Pruner.prune($0) }
-            currentElements.append(contentsOf: pruned)
+            if node.role == "AXWebArea" {
+                currentElements.append(contentsOf: node.children)
+            } else {
+                let pruned = node.children.flatMap { Pruner.prune($0) }
+                currentElements.append(contentsOf: pruned)
+            }
         }
 
         if !currentElements.isEmpty {
@@ -379,7 +388,7 @@ struct Grouper {
                 seen.insert(textKey)
             }
 
-            let label = node.title ?? node.description ?? (node.value?.value as? String).flatMap { role == "AXStaticText" ? $0 : nil }
+            let label = node.title.flatMap({ $0.isEmpty ? nil : $0 }) ?? node.axDescription.flatMap({ $0.isEmpty ? nil : $0 }) ?? node.placeholder ?? (node.value?.value as? String).flatMap { role == "AXStaticText" ? $0 : nil }
 
             if refAssigner.shouldAssignRef(node) {
                 let ref = refAssigner.nextRef()
@@ -394,7 +403,7 @@ struct Grouper {
                 elements.append(Element(
                     ref: ref,
                     role: simplified,
-                    label: node.title ?? node.description,
+                    label: node.title.flatMap({ $0.isEmpty ? nil : $0 }) ?? node.axDescription.flatMap({ $0.isEmpty ? nil : $0 }) ?? node.placeholder,
                     value: node.value,
                     placeholder: node.placeholder,
                     enabled: node.enabled ?? true,
@@ -402,13 +411,14 @@ struct Grouper {
                     selected: node.selected ?? false,
                     actions: simplifiedActions
                 ))
-            } else if Pruner.shouldKeep(node) {
-                // Non-interactive but kept elements (static text, images) - no ref
+            } else if Pruner.shouldKeep(node) || role == "AXStaticText" || role == "AXHeading" {
+                // Non-interactive but meaningful elements (text, headings, images) - no ref
+                let textValue: AnyCodable? = (role == "AXStaticText" || role == "AXTextArea" || role == "AXHeading") ? node.value : nil
                 elements.append(Element(
                     ref: "",
                     role: simplified,
                     label: label,
-                    value: role == "AXStaticText" ? node.value : nil,
+                    value: textValue,
                     placeholder: nil,
                     enabled: node.enabled ?? true,
                     focused: false,
