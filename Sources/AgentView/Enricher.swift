@@ -89,13 +89,14 @@ struct Pruner {
     static let alwaysPruneRoles: Set<String> = [
         "AXScrollBar", "AXSplitter", "AXGrowArea", "AXMatte",
         "AXRuler", "AXRulerMarker", "AXUnknown",
+        "AXMenuBar", "AXMenuBarItem", "AXMenu", "AXMenuItem",
     ]
 
     /// Roles that are always kept
     static let alwaysKeepRoles: Set<String> = [
         "AXButton", "AXTextField", "AXTextArea", "AXCheckBox",
         "AXRadioButton", "AXLink", "AXPopUpButton", "AXComboBox",
-        "AXSlider", "AXMenuItem", "AXMenuButton",
+        "AXSlider", "AXMenuButton",
         "AXTab", "AXTable", "AXRow", "AXCell",
         "AXDisclosureTriangle", "AXIncrementor", "AXColorWell",
     ]
@@ -186,7 +187,7 @@ class RefAssigner {
     static let interactiveRoles: Set<String> = [
         "AXButton", "AXTextField", "AXTextArea",
         "AXCheckBox", "AXRadioButton", "AXLink", "AXPopUpButton",
-        "AXComboBox", "AXSlider", "AXMenuItem", "AXTab",
+        "AXComboBox", "AXSlider", "AXTab",
         "AXIncrementor", "AXColorWell", "AXDisclosureTriangle",
         "AXMenuButton",
     ]
@@ -392,6 +393,11 @@ struct Grouper {
 
             if refAssigner.shouldAssignRef(node) {
                 let ref = refAssigner.nextRef()
+
+                // Link ref to AXUIElement via tempId
+                if let refMap = refMap, let tempId = node.tempId {
+                    refMap.promoteTemp(tempId, to: ref)
+                }
 
                 // Map simplified actions
                 var simplifiedActions: [String] = []

@@ -1,3 +1,5 @@
+import AppKit
+import ApplicationServices
 import ArgumentParser
 import Foundation
 
@@ -7,7 +9,7 @@ struct AgentView: ParsableCommand {
         commandName: "agentview",
         abstract: "Read macOS Accessibility APIs and expose structured UI state to AI agents.",
         version: "0.1.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self]
     )
 }
 
@@ -169,5 +171,99 @@ struct Act: ParsableCommand {
         if !result.success {
             throw ExitCode.failure
         }
+    }
+}
+
+// MARK: - open
+
+struct Open: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Open/launch an application by name or bundle ID"
+    )
+
+    @Argument(help: "App name (e.g., 'Safari', 'Obsidian') or bundle ID (e.g., 'md.obsidian')")
+    var app: String
+
+    @Option(name: .long, help: "URL or file to open with the app")
+    var url: String?
+
+    @Flag(name: .long, help: "Wait for app to launch before returning")
+    var wait: Bool = false
+
+    func run() throws {
+        // Use macOS `open` command — simple, reliable, handles everything
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+
+        var args = ["-a", app]
+        if wait { args.insert("-W", at: 0) }
+        if let urlStr = url { args.append(urlStr) }
+        process.arguments = args
+
+        let pipe = Pipe()
+        process.standardError = pipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        if process.terminationStatus != 0 {
+            let errorData = pipe.fileHandleForReading.readDataToEndOfFile()
+            let errorStr = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            fputs("Error: \(errorStr)", stderr)
+            throw ExitCode.failure
+        }
+
+        // Wait a moment for app to register, then find it
+        Thread.sleep(forTimeInterval: 1.0)
+
+        let workspace = NSWorkspace.shared
+        let runningApp = workspace.runningApplications.first {
+            $0.localizedName?.lowercased().contains(app.lowercased()) ?? false
+            || $0.bundleIdentifier?.lowercased() == app.lowercased()
+        }
+
+        let result: [String: AnyCodable] = [
+            "success": AnyCodable(true),
+            "app": AnyCodable(runningApp?.localizedName ?? app),
+            "pid": AnyCodable(runningApp?.processIdentifier ?? 0),
+            "bundleId": AnyCodable(runningApp?.bundleIdentifier ?? ""),
+        ]
+        try JSONOutput.print(result, pretty: false)
+    }
+}
+
+// MARK: - focus
+
+struct Focus: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Bring an app to the front / activate it"
+    )
+
+    @Argument(help: "App name (partial match, case-insensitive)")
+    var app: String?
+
+    @Option(name: .long, help: "App PID")
+    var pid: Int32?
+
+    func run() throws {
+        guard let runningApp = AXBridge.resolveApp(name: app, pid: pid) else {
+            throw ExitCode.failure
+        }
+
+        runningApp.activate()
+
+        // Also raise the first window via AX
+        let axApp = AXBridge.appElement(for: runningApp)
+        var windowRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(axApp, kAXMainWindowAttribute as CFString, &windowRef) == .success {
+            AXUIElementPerformAction(windowRef as! AXUIElement, kAXRaiseAction as CFString)
+        }
+
+        let result: [String: AnyCodable] = [
+            "success": AnyCodable(true),
+            "app": AnyCodable(runningApp.localizedName ?? "Unknown"),
+            "pid": AnyCodable(runningApp.processIdentifier),
+        ]
+        try JSONOutput.print(result, pretty: false)
     }
 }

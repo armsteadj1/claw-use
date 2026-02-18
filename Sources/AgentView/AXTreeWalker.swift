@@ -109,13 +109,9 @@ struct AXTreeWalker {
             children: children,
             childCount: childCount,
             domId: domId,
-            domClasses: domClasses
+            domClasses: domClasses,
+            tempId: tempId
         )
-
-        // Store tempId in a side-channel for ref mapping
-        if let tempId = tempId {
-            _tempIdMap[ObjectIdentifier(node as AnyObject)] = tempId
-        }
 
         return node
     }
@@ -209,4 +205,4 @@ struct AXTreeWalker {
 
 // Side-channel for temp ID mapping (struct can't store mutable state easily)
 // This is used during enrichment to connect RawAXNode back to AXUIElement
-var _tempIdMap: [ObjectIdentifier: String] = [:]
+// Removed: _tempIdMap is no longer needed — tempId is stored directly in RawAXNode

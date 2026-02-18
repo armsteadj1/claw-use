@@ -76,6 +76,50 @@ struct RawAXNode: Codable {
     let childCount: Int
     let domId: String?
     let domClasses: [String]?
+    let tempId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case role, roleDescription, title, value, axDescription, identifier, placeholder
+        case position, size, enabled, focused, selected, url, actions, children, childCount
+        case domId, domClasses
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        role = try c.decodeIfPresent(String.self, forKey: .role)
+        roleDescription = try c.decodeIfPresent(String.self, forKey: .roleDescription)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        value = try c.decodeIfPresent(AnyCodable.self, forKey: .value)
+        axDescription = try c.decodeIfPresent(String.self, forKey: .axDescription)
+        identifier = try c.decodeIfPresent(String.self, forKey: .identifier)
+        placeholder = try c.decodeIfPresent(String.self, forKey: .placeholder)
+        position = try c.decodeIfPresent(Position.self, forKey: .position)
+        size = try c.decodeIfPresent(Size.self, forKey: .size)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled)
+        focused = try c.decodeIfPresent(Bool.self, forKey: .focused)
+        selected = try c.decodeIfPresent(Bool.self, forKey: .selected)
+        url = try c.decodeIfPresent(String.self, forKey: .url)
+        actions = try c.decodeIfPresent([String].self, forKey: .actions) ?? []
+        children = try c.decodeIfPresent([RawAXNode].self, forKey: .children) ?? []
+        childCount = try c.decodeIfPresent(Int.self, forKey: .childCount) ?? 0
+        domId = try c.decodeIfPresent(String.self, forKey: .domId)
+        domClasses = try c.decodeIfPresent([String].self, forKey: .domClasses)
+        tempId = nil
+    }
+
+    init(role: String?, roleDescription: String?, title: String?, value: AnyCodable?,
+         axDescription: String?, identifier: String?, placeholder: String?,
+         position: Position?, size: Size?, enabled: Bool?, focused: Bool?,
+         selected: Bool?, url: String?, actions: [String], children: [RawAXNode],
+         childCount: Int, domId: String?, domClasses: [String]?, tempId: String? = nil) {
+        self.role = role; self.roleDescription = roleDescription; self.title = title
+        self.value = value; self.axDescription = axDescription; self.identifier = identifier
+        self.placeholder = placeholder; self.position = position; self.size = size
+        self.enabled = enabled; self.focused = focused; self.selected = selected
+        self.url = url; self.actions = actions; self.children = children
+        self.childCount = childCount; self.domId = domId; self.domClasses = domClasses
+        self.tempId = tempId
+    }
 
     struct Position: Codable {
         let x: Double
