@@ -75,6 +75,8 @@ screenState.onChange = { event, state in
 }
 
 screenState.startObserving()
+screenState.startPolling(interval: 0.5)  // 500ms poll — fast detection
+log("Screen state polling active (500ms interval)")
 
 // Start event bus monitoring (app lifecycle + AX notifications)
 eventBus.startMonitoring()

@@ -28,6 +28,7 @@ public final class ScreenState {
     private var lockState: LockState = .unknown
     private var displayState: DisplayState = .unknown
     private let lock = NSLock()
+    private var pollTimer: Timer?
 
     /// Called when screen state changes. Args: (event: String, newState: State)
     public var onChange: ((String, State) -> Void)?
@@ -72,7 +73,33 @@ public final class ScreenState {
         )
     }
 
+    /// Start polling screen state as fallback (for non-GUI-session daemons)
+    public func startPolling(interval: TimeInterval = 2.0) {
+        pollTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            self?.pollScreenState()
+        }
+    }
+
+    private func pollScreenState() {
+        guard let dict = CGSessionCopyCurrentDictionary() as? [String: Any] else { return }
+        let isLocked = dict["CGSSessionScreenIsLocked"] as? Bool ?? false
+        let newState: LockState = isLocked ? .locked : .unlocked
+
+        lock.lock()
+        let oldState = lockState
+        if newState != oldState {
+            lockState = newState
+            lock.unlock()
+            let event = newState == .locked ? "screen_locked" : "screen_unlocked"
+            onChange?(event, currentState())
+        } else {
+            lock.unlock()
+        }
+    }
+
     public func stopObserving() {
+        pollTimer?.invalidate()
+        pollTimer = nil
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
     }
