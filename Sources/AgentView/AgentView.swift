@@ -2,15 +2,114 @@ import AppKit
 import ApplicationServices
 import ArgumentParser
 import Foundation
+import AgentViewCore
 
 @main
 struct AgentView: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "agentview",
         abstract: "Read macOS Accessibility APIs and expose structured UI state to AI agents.",
-        version: "0.2.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self]
+        version: "0.3.0",
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self]
     )
+}
+
+// MARK: - Helper: route through daemon or fallback to direct
+
+/// Try daemon first; if unavailable, run directly via AgentViewCore
+private func callDaemon(method: String, params: [String: AnyCodable]? = nil) throws -> JSONRPCResponse {
+    do {
+        return try DaemonClient.call(method: method, params: params)
+    } catch {
+        // Daemon unavailable — not an error for the user, just means direct mode
+        throw error
+    }
+}
+
+private func printResponse(_ response: JSONRPCResponse, pretty: Bool) throws {
+    if let error = response.error {
+        fputs("Error: \(error.message)\n", stderr)
+        throw ExitCode.failure
+    }
+    guard let result = response.result else {
+        print("{}")
+        return
+    }
+    let enc = pretty ? JSONOutput.prettyEncoder : JSONOutput.encoder
+    let data = try enc.encode(result)
+    print(String(data: data, encoding: .utf8)!)
+}
+
+// MARK: - daemon
+
+struct Daemon: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Manage the agentviewd daemon",
+        subcommands: [DaemonStart.self, DaemonStop.self, DaemonStatus.self]
+    )
+}
+
+struct DaemonStart: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "start", abstract: "Start the daemon")
+
+    func run() throws {
+        if DaemonClient.isDaemonRunning() {
+            let pid = DaemonClient.daemonPID() ?? 0
+            print("{\"status\":\"already_running\",\"pid\":\(pid)}")
+            return
+        }
+        try DaemonClient.startDaemon()
+        // Wait for ready
+        for _ in 0..<20 {
+            Thread.sleep(forTimeInterval: 0.25)
+            if DaemonClient.isDaemonRunning() {
+                let pid = DaemonClient.daemonPID() ?? 0
+                print("{\"status\":\"started\",\"pid\":\(pid)}")
+                return
+            }
+        }
+        fputs("Error: Daemon failed to start\n", stderr)
+        throw ExitCode.failure
+    }
+}
+
+struct DaemonStop: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "stop", abstract: "Stop the daemon")
+
+    func run() throws {
+        if DaemonClient.stopDaemon() {
+            print("{\"status\":\"stopped\"}")
+        } else {
+            print("{\"status\":\"not_running\"}")
+        }
+    }
+}
+
+struct DaemonStatus: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "status", abstract: "Check daemon status")
+
+    func run() throws {
+        if DaemonClient.isDaemonRunning() {
+            let pid = DaemonClient.daemonPID() ?? 0
+            print("{\"status\":\"running\",\"pid\":\(pid)}")
+        } else {
+            print("{\"status\":\"not_running\"}")
+        }
+    }
+}
+
+// MARK: - status
+
+struct Status: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Full system status (daemon, screen, CDP)")
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        let response = try callDaemon(method: "status")
+        try printResponse(response, pretty: pretty)
+    }
 }
 
 // MARK: - list
@@ -24,12 +123,20 @@ struct List: ParsableCommand {
     var pretty: Bool = false
 
     func run() throws {
+        // Try daemon first
+        do {
+            let response = try callDaemon(method: "list")
+            try printResponse(response, pretty: pretty)
+            return
+        } catch {}
+
+        // Fallback: direct
         let apps = AXBridge.listApps()
         try JSONOutput.print(apps, pretty: pretty)
     }
 }
 
-// MARK: - raw
+// MARK: - raw (always direct — no daemon equivalent)
 
 struct Raw: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -91,9 +198,20 @@ struct Snapshot: ParsableCommand {
     var pretty: Bool = false
 
     func run() throws {
+        // Try daemon
+        do {
+            var params: [String: AnyCodable] = [:]
+            if let app = app { params["app"] = AnyCodable(app) }
+            if let pid = pid { params["pid"] = AnyCodable(Int(pid)) }
+            params["depth"] = AnyCodable(depth)
+            let response = try callDaemon(method: "snapshot", params: params)
+            try printResponse(response, pretty: pretty)
+            return
+        } catch {}
+
+        // Fallback: direct
         guard AXBridge.checkAccessibilityPermission() else {
             fputs("Error: Accessibility permission not granted.\n", stderr)
-            fputs("Enable in: System Settings → Privacy & Security → Accessibility\n", stderr)
             AXBridge.requestPermission()
             throw ExitCode.failure
         }
@@ -144,9 +262,26 @@ struct Act: ParsableCommand {
     var pretty: Bool = false
 
     func run() throws {
+        // Try daemon
+        do {
+            var params: [String: AnyCodable] = [
+                "action": AnyCodable(action),
+            ]
+            if let app = app { params["app"] = AnyCodable(app) }
+            if let pid = pid { params["pid"] = AnyCodable(Int(pid)) }
+            if let ref = ref { params["ref"] = AnyCodable(ref) }
+            if let value = value { params["value"] = AnyCodable(value) }
+            if let expr = expr { params["expr"] = AnyCodable(expr) }
+            params["port"] = AnyCodable(port)
+            params["timeout"] = AnyCodable(timeout)
+            let response = try callDaemon(method: "act", params: params)
+            try printResponse(response, pretty: pretty)
+            return
+        } catch {}
+
+        // Fallback: direct execution
         guard AXBridge.checkAccessibilityPermission() else {
             fputs("Error: Accessibility permission not granted.\n", stderr)
-            fputs("Enable in: System Settings → Privacy & Security → Accessibility\n", stderr)
             AXBridge.requestPermission()
             throw ExitCode.failure
         }
@@ -155,7 +290,7 @@ struct Act: ParsableCommand {
             throw ExitCode.failure
         }
 
-        // Handle script action separately — uses AppleScript, no ref needed
+        // Handle script action
         if action.lowercased() == "script" {
             guard let expression = expr else {
                 fputs("Error: script action requires --expr\n", stderr)
@@ -164,10 +299,8 @@ struct Act: ParsableCommand {
             let appName = runningApp.localizedName ?? "Unknown"
             let script: String
             if expression.lowercased().hasPrefix("tell application") {
-                // User provided a full tell block — run as-is
                 script = expression
             } else {
-                // Wrap in tell application block
                 script = "tell application \"\(appName)\"\n\(expression)\nend tell"
             }
 
@@ -180,7 +313,6 @@ struct Act: ParsableCommand {
             process.standardOutput = outPipe
             process.standardError = errPipe
 
-            // Run with a timeout
             try process.run()
 
             let timeoutSeconds = timeout
@@ -199,7 +331,7 @@ struct Act: ParsableCommand {
                     "app": AnyCodable(appName),
                     "pid": AnyCodable(runningApp.processIdentifier),
                     "action": AnyCodable("script"),
-                    "error": AnyCodable("AppleScript timed out after \(timeoutSeconds)s. The app may not respond while the screen is locked."),
+                    "error": AnyCodable("AppleScript timed out after \(timeoutSeconds)s."),
                 ]
                 try JSONOutput.print(output, pretty: pretty)
                 throw ExitCode.failure
@@ -238,7 +370,7 @@ struct Act: ParsableCommand {
             throw ExitCode.failure
         }
 
-        // Handle eval action separately — uses CDP, no ref needed
+        // Handle eval action
         if actionType == .eval {
             guard let expression = expr else {
                 fputs("Error: eval action requires --expr\n", stderr)
@@ -248,7 +380,7 @@ struct Act: ParsableCommand {
             do {
                 let pages = try cdp.listPages()
                 guard let page = pages.first, let wsUrl = page.webSocketDebuggerUrl else {
-                    fputs("Error: No CDP pages found. Is the app running with --remote-debugging-port=\(port)?\n", stderr)
+                    fputs("Error: No CDP pages found.\n", stderr)
                     throw ExitCode.failure
                 }
                 let evalResult = try cdp.evaluate(pageWsUrl: wsUrl, expression: expression)
@@ -273,26 +405,14 @@ struct Act: ParsableCommand {
             throw ExitCode.failure
         }
 
-        // First, take a snapshot to build the ref map
         let enricher = Enricher()
         let refMap = RefMap()
         _ = enricher.snapshot(app: runningApp, refMap: refMap)
 
-        // Execute the action
         let executor = ActionExecutor(refMap: refMap)
-        let result = executor.execute(
-            action: actionType,
-            ref: ref,
-            value: value,
-            on: runningApp,
-            enricher: enricher
-        )
-
+        let result = executor.execute(action: actionType, ref: ref, value: value, on: runningApp, enricher: enricher)
         try JSONOutput.print(result, pretty: pretty)
-
-        if !result.success {
-            throw ExitCode.failure
-        }
+        if !result.success { throw ExitCode.failure }
     }
 }
 
@@ -313,7 +433,6 @@ struct Open: ParsableCommand {
     var wait: Bool = false
 
     func run() throws {
-        // Use macOS `open` command — simple, reliable, handles everything
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
 
@@ -335,7 +454,6 @@ struct Open: ParsableCommand {
             throw ExitCode.failure
         }
 
-        // Wait a moment for app to register, then find it
         Thread.sleep(forTimeInterval: 1.0)
 
         let workspace = NSWorkspace.shared
@@ -374,7 +492,6 @@ struct Focus: ParsableCommand {
 
         runningApp.activate()
 
-        // Also raise the first window via AX
         let axApp = AXBridge.appElement(for: runningApp)
         var windowRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(axApp, kAXMainWindowAttribute as CFString, &windowRef) == .success {
@@ -387,6 +504,136 @@ struct Focus: ParsableCommand {
             "pid": AnyCodable(runningApp.processIdentifier),
         ]
         try JSONOutput.print(result, pretty: false)
+    }
+}
+
+// MARK: - restore
+
+struct Restore: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Restore Electron app windows via CDP (e.g., reopen Obsidian vault)"
+    )
+
+    @Argument(help: "App name (default: Obsidian)")
+    var app: String = "Obsidian"
+
+    @Option(name: .long, help: "CDP remote debugging port (default: 9222)")
+    var port: Int = 9222
+
+    @Option(name: .long, help: "Vault name to open (default: first available)")
+    var vault: String?
+
+    @Flag(name: .long, help: "Launch app if not running")
+    var launch: Bool = false
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        let workspace = NSWorkspace.shared
+
+        var runningApp = workspace.runningApplications.first {
+            $0.localizedName?.lowercased().contains(app.lowercased()) ?? false
+        }
+
+        if runningApp == nil {
+            if launch {
+                fputs("App '\(app)' not running. Launching with CDP on port \(port)...\n", stderr)
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                proc.arguments = ["-a", app, "--args", "--remote-debugging-port=\(port)"]
+                try proc.run()
+                proc.waitUntilExit()
+
+                for _ in 0..<10 {
+                    Thread.sleep(forTimeInterval: 1.0)
+                    runningApp = workspace.runningApplications.first {
+                        $0.localizedName?.lowercased().contains(app.lowercased()) ?? false
+                    }
+                    if runningApp != nil { break }
+                }
+
+                guard runningApp != nil else {
+                    fputs("Error: Failed to launch '\(app)'\n", stderr)
+                    throw ExitCode.failure
+                }
+            } else {
+                fputs("Error: '\(app)' is not running. Use --launch to start it.\n", stderr)
+                throw ExitCode.failure
+            }
+        }
+
+        fputs("Found \(runningApp!.localizedName ?? app) (pid \(runningApp!.processIdentifier))\n", stderr)
+
+        let cdp = CDPHelper(port: port)
+
+        var pages: [CDPHelper.PageInfo] = []
+        for attempt in 1...5 {
+            do {
+                pages = try cdp.listPages()
+                if !pages.isEmpty { break }
+            } catch {
+                if attempt == 5 {
+                    fputs("Error: Cannot connect to CDP on port \(port).\n", stderr)
+                    throw ExitCode.failure
+                }
+                fputs("CDP not ready, retrying (\(attempt)/5)...\n", stderr)
+                Thread.sleep(forTimeInterval: 2.0)
+            }
+        }
+
+        guard let page = pages.first else {
+            fputs("Error: No CDP pages found\n", stderr)
+            throw ExitCode.failure
+        }
+
+        fputs("CDP page: \(page.title) → \(page.url)\n", stderr)
+
+        if page.url.contains("starter.html") {
+            fputs("On vault picker. Attempting to open vault...\n", stderr)
+
+            guard let wsUrl = page.webSocketDebuggerUrl else {
+                fputs("Error: No websocket URL available\n", stderr)
+                throw ExitCode.failure
+            }
+
+            let selector: String
+            if let vaultName = vault {
+                selector = "document.querySelector('.recent-vaults-list-item-name')?.closest('.recent-vaults-list-item')?.click() || document.querySelectorAll('.recent-vaults-list-item').forEach(el => { if (el.textContent.includes('\(vaultName)')) el.click() })"
+            } else {
+                selector = "document.querySelector('.recent-vaults-list-item').click()"
+            }
+
+            _ = try cdp.evaluate(pageWsUrl: wsUrl, expression: selector)
+            fputs("Clicked vault. Waiting for load...\n", stderr)
+
+            Thread.sleep(forTimeInterval: 3.0)
+
+            let newPages = try cdp.listPages()
+            let mainPage = newPages.first { !$0.url.contains("starter.html") } ?? newPages.first
+            let success = mainPage != nil && !mainPage!.url.contains("starter.html")
+
+            let result: [String: AnyCodable] = [
+                "success": AnyCodable(success),
+                "app": AnyCodable(runningApp!.localizedName ?? app),
+                "pid": AnyCodable(runningApp!.processIdentifier),
+                "action": AnyCodable("vault_opened"),
+                "page_url": AnyCodable(mainPage?.url ?? "unknown"),
+                "page_title": AnyCodable(mainPage?.title ?? "unknown"),
+            ]
+            try JSONOutput.print(result, pretty: pretty)
+        } else {
+            fputs("Already in vault, no restore needed.\n", stderr)
+            let result: [String: AnyCodable] = [
+                "success": AnyCodable(true),
+                "app": AnyCodable(runningApp!.localizedName ?? app),
+                "pid": AnyCodable(runningApp!.processIdentifier),
+                "action": AnyCodable("already_open"),
+                "page_url": AnyCodable(page.url),
+                "page_title": AnyCodable(page.title),
+            ]
+            try JSONOutput.print(result, pretty: pretty)
+        }
     }
 }
 
@@ -428,9 +675,25 @@ struct Pipe: ParsableCommand {
     var pretty: Bool = false
 
     func run() throws {
-        // eval and script don't need AX or matching — fast path
+        // Try daemon
+        do {
+            var params: [String: AnyCodable] = [
+                "action": AnyCodable(action),
+            ]
+            if let app = app { params["app"] = AnyCodable(app) }
+            if let pid = pid { params["pid"] = AnyCodable(Int(pid)) }
+            if let match = match { params["match"] = AnyCodable(match) }
+            if let value = value { params["value"] = AnyCodable(value) }
+            if let expr = expr { params["expr"] = AnyCodable(expr) }
+            params["port"] = AnyCodable(port)
+            params["timeout"] = AnyCodable(timeout)
+            let response = try callDaemon(method: "pipe", params: params)
+            try printResponse(response, pretty: pretty)
+            return
+        } catch {}
+
+        // Fallback: direct
         if action.lowercased() == "eval" || action.lowercased() == "script" {
-            // Delegate to Act command
             var actCmd = Act()
             actCmd.app = app
             actCmd.action = action
@@ -453,12 +716,10 @@ struct Pipe: ParsableCommand {
             throw ExitCode.failure
         }
 
-        // Step 1: Snapshot (builds ref map)
         let enricher = Enricher()
         let refMap = RefMap()
         let snapshot = enricher.snapshot(app: runningApp, refMap: refMap)
 
-        // Step 2: Fuzzy match
         guard let matchStr = match else {
             fputs("Error: --match is required for pipe \(action)\n", stderr)
             throw ExitCode.failure
@@ -467,7 +728,6 @@ struct Pipe: ParsableCommand {
         let needle = matchStr.lowercased()
         var bestMatch: (ref: String, score: Int, label: String)?
 
-        // Search through all sections and elements
         for section in snapshot.content.sections {
             for element in section.elements {
                 let score = fuzzyScore(needle: needle, element: element, sectionLabel: section.label)
@@ -479,7 +739,6 @@ struct Pipe: ParsableCommand {
             }
         }
 
-        // Also check inferred actions
         for inferredAction in snapshot.actions {
             if let ref = inferredAction.ref {
                 let haystack = "\(inferredAction.name) \(inferredAction.description)".lowercased()
@@ -495,22 +754,15 @@ struct Pipe: ParsableCommand {
         guard let matched = bestMatch else {
             let output: [String: AnyCodable] = [
                 "success": AnyCodable(false),
-                "error": AnyCodable("No element matching '\(matchStr)' found. Available elements: \(snapshot.content.sections.flatMap { $0.elements }.map { "\($0.ref):\($0.label ?? $0.role)" }.joined(separator: ", "))"),
+                "error": AnyCodable("No element matching '\(matchStr)' found."),
                 "app": AnyCodable(snapshot.app),
-                "snapshot": includeSnapshot ? AnyCodable(encodableToAny(snapshot)) : AnyCodable(nil),
             ]
             try JSONOutput.print(output, pretty: pretty)
             throw ExitCode.failure
         }
 
-        // Step 3: Act (or read)
         if action.lowercased() == "read" {
-            // Just return the matched element + snapshot context
-            let matchedElement = snapshot.content.sections
-                .flatMap { $0.elements }
-                .first { $0.ref == matched.ref }
-
-            var output: [String: AnyCodable] = [
+            let output: [String: AnyCodable] = [
                 "success": AnyCodable(true),
                 "app": AnyCodable(snapshot.app),
                 "action": AnyCodable("read"),
@@ -518,40 +770,18 @@ struct Pipe: ParsableCommand {
                 "matched_label": AnyCodable(matched.label),
                 "match_score": AnyCodable(matched.score),
             ]
-            if let el = matchedElement {
-                output["element"] = AnyCodable([
-                    "ref": AnyCodable(el.ref),
-                    "role": AnyCodable(el.role),
-                    "label": AnyCodable(el.label),
-                    "value": el.value ?? AnyCodable(nil),
-                    "enabled": AnyCodable(el.enabled),
-                    "focused": AnyCodable(el.focused),
-                    "actions": AnyCodable(el.actions.map { AnyCodable($0) }),
-                ] as [String: AnyCodable])
-            }
-            if includeSnapshot {
-                output["snapshot"] = AnyCodable(encodableToAny(snapshot))
-            }
             try JSONOutput.print(output, pretty: pretty)
             return
         }
 
-        // For click, fill, etc. — execute the action
         guard let actionType = ActionExecutor.ActionType(rawValue: action.lowercased()) else {
-            fputs("Error: Unknown action '\(action)'. Valid: click, fill, read, eval, script\n", stderr)
+            fputs("Error: Unknown action '\(action)'\n", stderr)
             throw ExitCode.failure
         }
 
         let executor = ActionExecutor(refMap: refMap)
-        let result = executor.execute(
-            action: actionType,
-            ref: matched.ref,
-            value: value,
-            on: runningApp,
-            enricher: enricher
-        )
+        let result = executor.execute(action: actionType, ref: matched.ref, value: value, on: runningApp, enricher: enricher)
 
-        // Wrap result with match info
         var output: [String: AnyCodable] = [
             "success": AnyCodable(result.success),
             "app": AnyCodable(snapshot.app),
@@ -563,58 +793,29 @@ struct Pipe: ParsableCommand {
         if let err = result.error {
             output["error"] = AnyCodable(err)
         }
-        if includeSnapshot {
-            output["snapshot"] = AnyCodable(encodableToAny(snapshot))
-        }
         try JSONOutput.print(output, pretty: pretty)
-
-        if !result.success {
-            throw ExitCode.failure
-        }
+        if !result.success { throw ExitCode.failure }
     }
 
-    /// Fuzzy scoring: higher = better match
     private func fuzzyScore(needle: String, element: Element, sectionLabel: String?) -> Int {
         var score = 0
         let label = (element.label ?? "").lowercased()
         let role = element.role.lowercased()
-        let valStr = stringValue(element.value).lowercased()
+        let valStr: String = {
+            guard let val = element.value?.value else { return "" }
+            if let s = val as? String { return s }
+            return "\(val)"
+        }().lowercased()
         let secLabel = (sectionLabel ?? "").lowercased()
 
-        // Exact label match
         if label == needle { score += 100 }
-        // Label contains needle
         else if label.contains(needle) { score += 80 }
-        // Needle contains label (partial)
         else if !label.isEmpty && needle.contains(label) { score += 40 }
-
-        // Role match
         if role.contains(needle) { score += 30 }
-
-        // Value match
         if valStr.contains(needle) { score += 20 }
-
-        // Section label match
         if secLabel.contains(needle) { score += 10 }
-
-        // Boost for actionable elements
         if !element.actions.isEmpty && score > 0 { score += 5 }
 
         return score
-    }
-
-    private func stringValue(_ v: AnyCodable?) -> String {
-        guard let val = v?.value else { return "" }
-        if let s = val as? String { return s }
-        return "\(val)"
-    }
-
-    /// Convert Encodable to Any for AnyCodable wrapping
-    private func encodableToAny<T: Encodable>(_ value: T) -> Any {
-        guard let data = try? JSONOutput.encoder.encode(value),
-              let dict = try? JSONSerialization.jsonObject(with: data) else {
-            return "encoding_error"
-        }
-        return dict
     }
 }

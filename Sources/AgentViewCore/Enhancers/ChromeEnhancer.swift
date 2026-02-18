@@ -1,12 +1,14 @@
 import AppKit
 import Foundation
 
-struct ChromeEnhancer: AppEnhancer {
-    var bundleIdentifiers: [String] {
+public struct ChromeEnhancer: AppEnhancer {
+    public var bundleIdentifiers: [String] {
         ["com.google.Chrome", "com.google.Chrome.canary", "org.chromium.Chromium"]
     }
 
-    func enhance(rawTree: RawAXNode, app: NSRunningApplication, refMap: RefMap?) -> AppSnapshot {
+    public init() {}
+
+    public func enhance(rawTree: RawAXNode, app: NSRunningApplication, refMap: RefMap?) -> AppSnapshot {
         let window = extractWindow(rawTree)
         let meta = extractMeta(rawTree: rawTree)
 
@@ -16,7 +18,6 @@ struct ChromeEnhancer: AppEnhancer {
         let refAssigner = RefAssigner()
         var sections: [Section] = []
 
-        // Browser toolbar section
         for node in chromeNodes {
             if node.role == "AXToolbar" {
                 let elements = Grouper.buildElements(
@@ -39,7 +40,6 @@ struct ChromeEnhancer: AppEnhancer {
             }
         }
 
-        // Web content sections
         if let webArea = webArea {
             let webSections = processWebContent(webArea, refAssigner: refAssigner, refMap: refMap)
             sections.append(contentsOf: webSections)
@@ -71,18 +71,16 @@ struct ChromeEnhancer: AppEnhancer {
         )
     }
 
-    func extractMeta(rawTree: RawAXNode) -> [String: AnyCodable] {
+    public func extractMeta(rawTree: RawAXNode) -> [String: AnyCodable] {
         var meta: [String: AnyCodable] = [:]
         meta["enhancer"] = AnyCodable("chrome")
 
         let windowNode = rawTree.children.first(where: { $0.role == "AXWindow" }) ?? rawTree
 
-        // Extract URL from toolbar
         if let url = extractURL(from: windowNode) {
             meta["url"] = AnyCodable(url)
         }
 
-        // Extract tabs
         let tabs = extractTabs(from: windowNode)
         if !tabs.isEmpty {
             meta["tabs"] = AnyCodable(tabs.map { tab in
@@ -182,10 +180,8 @@ struct ChromeEnhancer: AppEnhancer {
     func processWebContent(_ webArea: RawAXNode, refAssigner: RefAssigner, refMap: RefMap?) -> [Section] {
         var sections: [Section] = []
 
-        // Collect meaningful nodes from web content
         let meaningful = collectWebElements(webArea)
 
-        // Try to detect forms
         let formNodes = meaningful.filter { node in
             guard let role = node.role else { return false }
             return ["AXTextField", "AXTextArea", "AXComboBox", "AXCheckBox", "AXRadioButton", "AXButton"].contains(role)
@@ -201,7 +197,6 @@ struct ChromeEnhancer: AppEnhancer {
             }
         }
 
-        // Content (text, headings, links)
         let contentNodes = meaningful.filter { node in
             guard let role = node.role else { return false }
             return ["AXStaticText", "AXHeading", "AXLink", "AXImage"].contains(role) ||
@@ -215,7 +210,6 @@ struct ChromeEnhancer: AppEnhancer {
             }
         }
 
-        // Navigation links
         let navLinks = meaningful.filter { $0.role == "AXLink" }
         if navLinks.count >= 3 {
             let elements = Grouper.buildElements(from: navLinks, refAssigner: refAssigner, refMap: refMap)
@@ -270,7 +264,6 @@ struct ChromeEnhancer: AppEnhancer {
     private func generateSummary(window: WindowInfo, meta: [String: AnyCodable], sections: [Section]) -> String {
         var parts: [String] = ["Chrome"]
         if let title = window.title {
-            // Strip " - Google Chrome" suffix
             let clean = title.replacingOccurrences(of: " - Google Chrome", with: "")
             if !clean.isEmpty { parts.append("showing \"\(clean)\"") }
         }

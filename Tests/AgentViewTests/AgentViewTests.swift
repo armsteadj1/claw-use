@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import agentview
+@testable import AgentViewCore
 
 // MARK: - AnyCodable Tests
 
@@ -65,7 +65,7 @@ import Testing
         roleDescription: "button",
         title: "Click Me",
         value: AnyCodable("pressed"),
-        description: "A button",
+        axDescription: "A button",
         identifier: "btn1",
         placeholder: nil,
         position: RawAXNode.Position(x: 10.0, y: 20.0),
@@ -153,7 +153,7 @@ import Testing
 @Test func prunerKeepsButtons() {
     let node = RawAXNode(
         role: "AXButton", roleDescription: nil, title: "OK",
-        value: nil, description: nil, identifier: nil, placeholder: nil,
+        value: nil, axDescription: nil, identifier: nil, placeholder: nil,
         position: nil, size: nil, enabled: true, focused: false, selected: false,
         url: nil, actions: ["AXPress"], children: [], childCount: 0,
         domId: nil, domClasses: nil
@@ -165,7 +165,7 @@ import Testing
 @Test func prunerRemovesLayoutGroups() {
     let node = RawAXNode(
         role: "AXGroup", roleDescription: nil, title: nil,
-        value: nil, description: nil, identifier: nil, placeholder: nil,
+        value: nil, axDescription: nil, identifier: nil, placeholder: nil,
         position: nil, size: nil, enabled: nil, focused: nil, selected: nil,
         url: nil, actions: [], children: [], childCount: 0,
         domId: nil, domClasses: nil
@@ -176,19 +176,19 @@ import Testing
 @Test func prunerKeepsGroupWithTitle() {
     let node = RawAXNode(
         role: "AXGroup", roleDescription: nil, title: "Settings",
-        value: nil, description: nil, identifier: nil, placeholder: nil,
+        value: nil, axDescription: nil, identifier: nil, placeholder: nil,
         position: nil, size: nil, enabled: nil, focused: nil, selected: nil,
         url: nil, actions: [], children: [
             RawAXNode(
                 role: "AXButton", roleDescription: nil, title: "OK",
-                value: nil, description: nil, identifier: nil, placeholder: nil,
+                value: nil, axDescription: nil, identifier: nil, placeholder: nil,
                 position: nil, size: nil, enabled: true, focused: false, selected: false,
                 url: nil, actions: [], children: [], childCount: 0,
                 domId: nil, domClasses: nil
             ),
             RawAXNode(
                 role: "AXButton", roleDescription: nil, title: "Cancel",
-                value: nil, description: nil, identifier: nil, placeholder: nil,
+                value: nil, axDescription: nil, identifier: nil, placeholder: nil,
                 position: nil, size: nil, enabled: true, focused: false, selected: false,
                 url: nil, actions: [], children: [], childCount: 0,
                 domId: nil, domClasses: nil
@@ -214,7 +214,7 @@ import Testing
 
     let button = RawAXNode(
         role: "AXButton", roleDescription: nil, title: nil,
-        value: nil, description: nil, identifier: nil, placeholder: nil,
+        value: nil, axDescription: nil, identifier: nil, placeholder: nil,
         position: nil, size: nil, enabled: nil, focused: nil, selected: nil,
         url: nil, actions: [], children: [], childCount: 0,
         domId: nil, domClasses: nil
@@ -223,7 +223,7 @@ import Testing
 
     let staticText = RawAXNode(
         role: "AXStaticText", roleDescription: nil, title: nil,
-        value: AnyCodable("Hello"), description: nil, identifier: nil, placeholder: nil,
+        value: AnyCodable("Hello"), axDescription: nil, identifier: nil, placeholder: nil,
         position: nil, size: nil, enabled: nil, focused: nil, selected: nil,
         url: nil, actions: [], children: [], childCount: 0,
         domId: nil, domClasses: nil
@@ -263,4 +263,30 @@ import Testing
     let json = String(data: data, encoding: .utf8)!
     #expect(json.contains("Element not found"))
     #expect(json.contains("false"))
+}
+
+// MARK: - JSON-RPC Tests
+
+@Test func jsonRPCRequestEncoding() throws {
+    let request = JSONRPCRequest(method: "ping")
+    let data = try JSONOutput.encoder.encode(request)
+    let json = String(data: data, encoding: .utf8)!
+    #expect(json.contains("ping"))
+    #expect(json.contains("2.0"))
+}
+
+@Test func jsonRPCResponseEncoding() throws {
+    let response = JSONRPCResponse(result: AnyCodable(["pong": AnyCodable(true)] as [String: AnyCodable]), id: AnyCodable(1))
+    let data = try JSONOutput.encoder.encode(response)
+    let json = String(data: data, encoding: .utf8)!
+    #expect(json.contains("2.0"))
+    #expect(json.contains("pong"))
+}
+
+@Test func jsonRPCErrorResponse() throws {
+    let response = JSONRPCResponse(error: .methodNotFound, id: AnyCodable(1))
+    let data = try JSONOutput.encoder.encode(response)
+    let json = String(data: data, encoding: .utf8)!
+    #expect(json.contains("-32601"))
+    #expect(json.contains("Method not found"))
 }

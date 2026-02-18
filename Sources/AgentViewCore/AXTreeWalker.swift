@@ -2,42 +2,44 @@ import ApplicationServices
 import Foundation
 
 /// Maintains mapping from snapshot refs to AXUIElements for action execution
-class RefMap {
+public class RefMap {
     private var refs: [String: AXUIElement] = [:]
     private var elementToTempId: [String: AXUIElement] = [:]
     private var tempIdCounter = 0
 
-    func registerTemp(element: AXUIElement) -> String {
+    public init() {}
+
+    public func registerTemp(element: AXUIElement) -> String {
         let id = "tmp_\(tempIdCounter)"
         tempIdCounter += 1
         elementToTempId[id] = element
         return id
     }
 
-    func promoteTemp(_ tempId: String, to ref: String) {
+    public func promoteTemp(_ tempId: String, to ref: String) {
         if let el = elementToTempId[tempId] {
             refs[ref] = el
         }
     }
 
-    func register(ref: String, element: AXUIElement) {
+    public func register(ref: String, element: AXUIElement) {
         refs[ref] = element
     }
 
-    func element(for ref: String) -> AXUIElement? {
+    public func element(for ref: String) -> AXUIElement? {
         refs[ref]
     }
 
-    func clear() {
+    public func clear() {
         refs.removeAll()
         elementToTempId.removeAll()
         tempIdCounter = 0
     }
 }
 
-struct AXTreeWalker {
+public struct AXTreeWalker {
     /// Walk the full AX tree from an element, returning a RawAXNode tree
-    static func walk(
+    public static func walk(
         _ element: AXUIElement,
         depth: Int = 0,
         maxDepth: Int = 50,
@@ -118,14 +120,14 @@ struct AXTreeWalker {
 
     // MARK: - Attribute Readers
 
-    static func readString(_ element: AXUIElement, _ attribute: String) -> String? {
+    public static func readString(_ element: AXUIElement, _ attribute: String) -> String? {
         var ref: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &ref)
         guard err == .success else { return nil }
         return ref as? String
     }
 
-    static func readBool(_ element: AXUIElement, _ attribute: String) -> Bool? {
+    public static func readBool(_ element: AXUIElement, _ attribute: String) -> Bool? {
         var ref: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &ref)
         guard err == .success else { return nil }
@@ -135,7 +137,7 @@ struct AXTreeWalker {
         return ref as? Bool
     }
 
-    static func readValue(_ element: AXUIElement, _ attribute: String) -> AnyCodable? {
+    public static func readValue(_ element: AXUIElement, _ attribute: String) -> AnyCodable? {
         var ref: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &ref)
         guard err == .success, let val = ref else { return nil }
@@ -157,7 +159,7 @@ struct AXTreeWalker {
         return AnyCodable(String(describing: val))
     }
 
-    static func readPosition(_ element: AXUIElement) -> RawAXNode.Position? {
+    public static func readPosition(_ element: AXUIElement) -> RawAXNode.Position? {
         var ref: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &ref)
         guard err == .success, let val = ref else { return nil }
@@ -168,7 +170,7 @@ struct AXTreeWalker {
         return nil
     }
 
-    static func readSize(_ element: AXUIElement) -> RawAXNode.Size? {
+    public static func readSize(_ element: AXUIElement) -> RawAXNode.Size? {
         var ref: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &ref)
         guard err == .success, let val = ref else { return nil }
@@ -179,14 +181,14 @@ struct AXTreeWalker {
         return nil
     }
 
-    static func readChildren(_ element: AXUIElement) -> [AXUIElement]? {
+    public static func readChildren(_ element: AXUIElement) -> [AXUIElement]? {
         var ref: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &ref)
         guard err == .success else { return nil }
         return ref as? [AXUIElement]
     }
 
-    static func readURLString(_ element: AXUIElement) -> String? {
+    public static func readURLString(_ element: AXUIElement) -> String? {
         var ref: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(element, kAXURLAttribute as CFString, &ref)
         guard err == .success, let val = ref else { return nil }
@@ -195,14 +197,10 @@ struct AXTreeWalker {
         return nil
     }
 
-    static func readStringArray(_ element: AXUIElement, _ attribute: String) -> [String]? {
+    public static func readStringArray(_ element: AXUIElement, _ attribute: String) -> [String]? {
         var ref: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &ref)
         guard err == .success else { return nil }
         return ref as? [String]
     }
 }
-
-// Side-channel for temp ID mapping (struct can't store mutable state easily)
-// This is used during enrichment to connect RawAXNode back to AXUIElement
-// Removed: _tempIdMap is no longer needed — tempId is stored directly in RawAXNode

@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 /// Protocol for app-specific enrichment logic
-protocol AppEnhancer {
+public protocol AppEnhancer {
     /// Bundle IDs this enhancer handles (empty = generic fallback)
     var bundleIdentifiers: [String] { get }
 

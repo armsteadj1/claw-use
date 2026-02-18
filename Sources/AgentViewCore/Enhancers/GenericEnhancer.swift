@@ -1,24 +1,22 @@
 import AppKit
 import Foundation
 
-struct GenericEnhancer: AppEnhancer {
-    var bundleIdentifiers: [String] { [] }
+public struct GenericEnhancer: AppEnhancer {
+    public var bundleIdentifiers: [String] { [] }
 
-    func enhance(rawTree: RawAXNode, app: NSRunningApplication, refMap: RefMap?) -> AppSnapshot {
+    public init() {}
+
+    public func enhance(rawTree: RawAXNode, app: NSRunningApplication, refMap: RefMap?) -> AppSnapshot {
         let window = extractWindow(rawTree)
         let meta = extractMeta(rawTree: rawTree)
 
-        // Prune the tree
         let prunedNodes = flattenTree(rawTree)
 
-        // Group into sections
         let refAssigner = RefAssigner()
         let sections = Grouper.groupWithRefMap(prunedNodes, refAssigner: refAssigner, refMap: refMap)
 
-        // Generate summary
         let summary = generateSummary(app: app, window: window, sections: sections)
 
-        // Infer actions
         let actions = inferActions(sections: sections)
 
         let enrichedCount = sections.flatMap(\.elements).filter { !$0.ref.isEmpty }.count
@@ -42,7 +40,7 @@ struct GenericEnhancer: AppEnhancer {
         )
     }
 
-    func extractMeta(rawTree: RawAXNode) -> [String: AnyCodable] {
+    public func extractMeta(rawTree: RawAXNode) -> [String: AnyCodable] {
         var meta: [String: AnyCodable] = [:]
         meta["enhancer"] = AnyCodable("generic")
         return meta
@@ -50,8 +48,7 @@ struct GenericEnhancer: AppEnhancer {
 
     // MARK: - Window extraction
 
-    func extractWindow(_ tree: RawAXNode) -> WindowInfo {
-        // Find the first AXWindow child
+    public func extractWindow(_ tree: RawAXNode) -> WindowInfo {
         if let window = tree.children.first(where: { $0.role == "AXWindow" }) {
             return WindowInfo(
                 title: window.title,
@@ -64,9 +61,7 @@ struct GenericEnhancer: AppEnhancer {
 
     // MARK: - Tree Flattening
 
-    /// Flatten the tree keeping only meaningful nodes, respecting the pruner
-    func flattenTree(_ tree: RawAXNode) -> [RawAXNode] {
-        // Start from the window level
+    public func flattenTree(_ tree: RawAXNode) -> [RawAXNode] {
         let window = tree.children.first(where: { $0.role == "AXWindow" }) ?? tree
         return collectMeaningfulNodes(window)
     }
@@ -81,11 +76,9 @@ struct GenericEnhancer: AppEnhancer {
             return result
         }
 
-        // For WebArea (Electron/browser content): recurse DEEP to extract all meaningful content
         if role == "AXWebArea" {
             let webContent = collectWebContent(node)
             if !webContent.isEmpty {
-                // Create a synthetic section-level node with the extracted content as children
                 let webSection = RawAXNode(
                     role: "AXWebArea",
                     roleDescription: node.roleDescription,
@@ -111,7 +104,6 @@ struct GenericEnhancer: AppEnhancer {
             return result
         }
 
-        // If this is a section-level container, add it directly
         let sectionRoles: Set<String> = [
             "AXToolbar", "AXTabGroup", "AXTable", "AXList", "AXOutline",
             "AXSheet", "AXDialog", "AXPopover",
@@ -121,13 +113,11 @@ struct GenericEnhancer: AppEnhancer {
             return result
         }
 
-        // If this is a meaningful leaf element, collect it
         if Pruner.shouldKeep(node) && RefAssigner.interactiveRoles.contains(role) {
             result.append(node)
             return result
         }
 
-        // If it's static text, keep it
         if role == "AXStaticText" {
             if let val = node.value?.value as? String, !val.isEmpty {
                 result.append(node)
@@ -135,19 +125,14 @@ struct GenericEnhancer: AppEnhancer {
             }
         }
 
-        // Groups with titles: keep them as labels but ALSO recurse into children
-        // (Electron apps wrap content in titled groups far above the actual WebArea)
         if role == "AXGroup" && node.title != nil && !node.title!.isEmpty {
-            // Only keep as a leaf if it has no deeper meaningful content
             let hasDeepContent = node.children.contains(where: { hasWebArea($0) || hasMeaningfulContent($0) })
             if !hasDeepContent {
                 result.append(node)
                 return result
             }
-            // Otherwise fall through to recurse
         }
 
-        // Otherwise recurse into children
         for child in node.children {
             result.append(contentsOf: collectMeaningfulNodes(child))
         }
@@ -155,31 +140,26 @@ struct GenericEnhancer: AppEnhancer {
         return result
     }
 
-    /// Check if any descendant contains a WebArea
     private func hasWebArea(_ node: RawAXNode) -> Bool {
         if node.role == "AXWebArea" { return true }
         return node.children.contains(where: { hasWebArea($0) })
     }
 
-    /// Check if a node or its descendants have meaningful interactive content
     private func hasMeaningfulContent(_ node: RawAXNode) -> Bool {
         if let role = node.role, RefAssigner.interactiveRoles.contains(role) { return true }
         if node.role == "AXStaticText", let val = node.value?.value as? String, !val.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, val != "\u{200b}" { return true }
         return node.children.contains(where: { hasMeaningfulContent($0) })
     }
 
-    /// Recursively extract meaningful content from inside a WebArea (Electron/browser)
     private func collectWebContent(_ node: RawAXNode) -> [RawAXNode] {
         var result: [RawAXNode] = []
         guard let role = node.role else { return result }
 
-        // Keep interactive elements
         if RefAssigner.interactiveRoles.contains(role) {
             result.append(node)
             return result
         }
 
-        // Keep static text with real content (not just zero-width spaces)
         if role == "AXStaticText" {
             if let val = node.value?.value as? String, !val.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                val != "\u{200b}" {
@@ -188,25 +168,21 @@ struct GenericEnhancer: AppEnhancer {
             }
         }
 
-        // Keep headings
         if role == "AXHeading" {
             result.append(node)
             return result
         }
 
-        // Keep images with descriptions
         if role == "AXImage" && (node.title != nil || node.axDescription != nil) {
             result.append(node)
             return result
         }
 
-        // Keep lists and tables
         if ["AXTable", "AXList", "AXOutline"].contains(role) {
             result.append(node)
             return result
         }
 
-        // Recurse into everything else
         for child in node.children {
             result.append(contentsOf: collectWebContent(child))
         }
@@ -216,7 +192,7 @@ struct GenericEnhancer: AppEnhancer {
 
     // MARK: - Summary
 
-    func generateSummary(app: NSRunningApplication, window: WindowInfo, sections: [Section]) -> String {
+    public func generateSummary(app: NSRunningApplication, window: WindowInfo, sections: [Section]) -> String {
         var parts: [String] = []
         let appName = app.localizedName ?? "Unknown"
         parts.append(appName)
@@ -240,12 +216,11 @@ struct GenericEnhancer: AppEnhancer {
 
     // MARK: - Action Inference
 
-    func inferActions(sections: [Section]) -> [InferredAction] {
+    public func inferActions(sections: [Section]) -> [InferredAction] {
         var actions: [InferredAction] = []
 
         for section in sections {
             if section.role == SectionRole.form.rawValue || section.role == "form" {
-                // Form with submit button
                 if let submit = section.elements.first(where: { $0.role == "button" && !$0.ref.isEmpty }) {
                     let fields = section.elements.filter {
                         ($0.role == "textfield" || $0.role == "textarea" || $0.role == "combobox") && !$0.ref.isEmpty
@@ -278,15 +253,5 @@ struct GenericEnhancer: AppEnhancer {
         }
 
         return actions
-    }
-}
-
-// MARK: - String Helpers
-
-extension String {
-    var slugified: String {
-        self.lowercased()
-            .replacingOccurrences(of: " ", with: "_")
-            .filter { $0.isLetter || $0.isNumber || $0 == "_" }
     }
 }

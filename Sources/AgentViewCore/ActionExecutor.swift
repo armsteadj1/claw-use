@@ -2,10 +2,14 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-struct ActionExecutor {
-    let refMap: RefMap
+public struct ActionExecutor {
+    public let refMap: RefMap
 
-    enum ActionType: String {
+    public init(refMap: RefMap) {
+        self.refMap = refMap
+    }
+
+    public enum ActionType: String {
         case click
         case focus
         case fill
@@ -15,7 +19,7 @@ struct ActionExecutor {
         case eval
     }
 
-    func execute(
+    public func execute(
         action: ActionType,
         ref: String,
         value: String?,
@@ -48,7 +52,6 @@ struct ActionExecutor {
         case .select:
             result = performSelect(element: element, optionLabel: value)
         case .eval:
-            // Handled in Act command directly via CDP — should not reach here
             result = ActionResultOutput(success: false, error: "eval is handled at command level, not in ActionExecutor", snapshot: nil)
         }
 
@@ -98,7 +101,6 @@ struct ActionExecutor {
     // MARK: - Fill
 
     private func performFill(element: AXUIElement, value: String) -> ActionResultOutput {
-        // Verify element is a text field type
         var role: CFTypeRef?
         AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
         let roleStr = role as? String ?? ""
@@ -112,11 +114,9 @@ struct ActionExecutor {
             )
         }
 
-        // Focus first
         AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, true as CFTypeRef)
         Thread.sleep(forTimeInterval: 0.1)
 
-        // Set value
         let error = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFTypeRef)
         if error != .success {
             return ActionResultOutput(
@@ -128,7 +128,6 @@ struct ActionExecutor {
 
         Thread.sleep(forTimeInterval: 0.2)
 
-        // Verify
         var newValue: CFTypeRef?
         AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &newValue)
 
@@ -170,7 +169,6 @@ struct ActionExecutor {
         case "AXPopUpButton":
             return selectDropdownOption(element: element, optionLabel: optionLabel)
         case "AXTab":
-            // Tabs just need a press
             let error = AXUIElementPerformAction(element, kAXPressAction as CFString)
             if error != .success {
                 return ActionResultOutput(success: false, error: "Tab select failed with code \(error.rawValue)", snapshot: nil)
@@ -185,7 +183,6 @@ struct ActionExecutor {
             Thread.sleep(forTimeInterval: 0.2)
             return ActionResultOutput(success: true, error: nil, snapshot: nil)
         default:
-            // Try AXPress as fallback
             let error = AXUIElementPerformAction(element, kAXPressAction as CFString)
             if error != .success {
                 return ActionResultOutput(
@@ -200,7 +197,6 @@ struct ActionExecutor {
     }
 
     private func selectDropdownOption(element: AXUIElement, optionLabel: String?) -> ActionResultOutput {
-        // Press to open the dropdown
         let pressErr = AXUIElementPerformAction(element, kAXPressAction as CFString)
         if pressErr != .success {
             return ActionResultOutput(success: false, error: "Failed to open dropdown: code \(pressErr.rawValue)", snapshot: nil)
@@ -209,15 +205,12 @@ struct ActionExecutor {
         Thread.sleep(forTimeInterval: 0.3)
 
         guard let label = optionLabel else {
-            // Just opened the dropdown, no specific option requested
             return ActionResultOutput(success: true, error: nil, snapshot: nil)
         }
 
-        // Find the menu that appeared
         if let menuItem = findMenuItem(in: element, label: label) {
             let selectErr = AXUIElementPerformAction(menuItem, kAXPressAction as CFString)
             if selectErr != .success {
-                // Close menu with Cancel
                 AXUIElementPerformAction(element, kAXCancelAction as CFString)
                 return ActionResultOutput(success: false, error: "Failed to select option '\(label)'", snapshot: nil)
             }
@@ -225,7 +218,6 @@ struct ActionExecutor {
             return ActionResultOutput(success: true, error: nil, snapshot: nil)
         }
 
-        // Option not found, close menu
         AXUIElementPerformAction(element, kAXCancelAction as CFString)
         return ActionResultOutput(
             success: false,
@@ -235,7 +227,6 @@ struct ActionExecutor {
     }
 
     private func findMenuItem(in element: AXUIElement, label: String) -> AXUIElement? {
-        // Look for AXMenu child, then AXMenuItem matching label
         guard let children = AXTreeWalker.readChildren(element) else { return nil }
         for child in children {
             let childRole = AXTreeWalker.readString(child, kAXRoleAttribute)
@@ -249,7 +240,6 @@ struct ActionExecutor {
                     }
                 }
             }
-            // Recurse in case menu is nested
             if let found = findMenuItem(in: child, label: label) {
                 return found
             }
