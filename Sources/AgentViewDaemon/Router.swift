@@ -9,11 +9,16 @@ final class Router {
     private let screenState: ScreenState
     private let cdpPool: CDPConnectionPool
     private let transportRouter: TransportRouter
+    let snapshotCache: SnapshotCache
+    let eventBus: EventBus
 
-    init(screenState: ScreenState, cdpPool: CDPConnectionPool, transportRouter: TransportRouter) {
+    init(screenState: ScreenState, cdpPool: CDPConnectionPool, transportRouter: TransportRouter,
+         snapshotCache: SnapshotCache, eventBus: EventBus) {
         self.screenState = screenState
         self.cdpPool = cdpPool
         self.transportRouter = transportRouter
+        self.snapshotCache = snapshotCache
+        self.eventBus = eventBus
     }
 
     func handle(_ request: JSONRPCRequest) -> JSONRPCResponse {
@@ -32,6 +37,10 @@ final class Router {
             return handlePipe(params: params, id: request.id)
         case "status":
             return handleStatus(id: request.id)
+        case "subscribe":
+            return handleSubscribe(params: params, id: request.id)
+        case "events":
+            return handleEvents(params: params, id: request.id)
         default:
             return JSONRPCResponse(error: .methodNotFound, id: request.id)
         }
@@ -63,21 +72,52 @@ final class Router {
         let appName = params["app"]?.value as? String
         let pid = params["pid"]?.value as? Int
         let depth = (params["depth"]?.value as? Int) ?? 50
+        let noCache = params["no_cache"]?.value as? Bool ?? false
 
         guard let runningApp = resolveApp(name: appName, pid: pid) else {
             return JSONRPCResponse(error: JSONRPCError(code: -2, message: "App not found"), id: id)
         }
 
+        let resolvedName = runningApp.localizedName ?? "Unknown"
+
+        // Check cache first (unless explicitly bypassed)
+        if !noCache, let cached = snapshotCache.get(app: resolvedName) {
+            // Return cached snapshot with cache metadata
+            if let data = snapshotToData(cached.snapshot) {
+                var output = data
+                output["cache_hit"] = AnyCodable(true)
+                output["cache_age_ms"] = AnyCodable(cached.ageMs)
+                output["transport_used"] = AnyCodable(cached.transport)
+                return JSONRPCResponse(result: AnyCodable(output), id: id)
+            }
+        }
+
         let action = TransportAction(
             type: "snapshot",
-            app: runningApp.localizedName ?? "Unknown",
+            app: resolvedName,
             bundleId: runningApp.bundleIdentifier,
             pid: runningApp.processIdentifier,
             depth: depth
         )
 
         let result = transportRouter.execute(action: action)
+
+        // Cache successful snapshot results
+        if result.success, let data = result.data,
+           let snapshotData = try? JSONOutput.encode(AnyCodable(data)),
+           let snapshot = try? JSONDecoder().decode(AppSnapshot.self, from: snapshotData) {
+            let _ = snapshotCache.put(app: resolvedName, snapshot: snapshot, transport: result.transportUsed)
+        }
+
         return transportResultToResponse(result, id: id)
+    }
+
+    private func snapshotToData(_ snapshot: AppSnapshot) -> [String: AnyCodable]? {
+        guard let data = try? JSONOutput.encode(snapshot),
+              let dict = try? JSONDecoder().decode([String: AnyCodable].self, from: data) else {
+            return nil
+        }
+        return dict
     }
 
     // MARK: - act (routed through transport layer with fallback)
@@ -263,12 +303,58 @@ final class Router {
                 ] as [String: AnyCodable])
             }),
             "cache": AnyCodable([
-                "entries": AnyCodable(0),
-                "hit_rate": AnyCodable(0.0),
+                "entries": AnyCodable(snapshotCache.stats.entries),
+                "hits": AnyCodable(snapshotCache.stats.hits),
+                "misses": AnyCodable(snapshotCache.stats.misses),
+                "hit_rate": AnyCodable(snapshotCache.stats.hitRate),
+            ] as [String: AnyCodable]),
+            "events": AnyCodable([
+                "recent_count": AnyCodable(eventBus.eventCount),
+                "subscribers": AnyCodable(eventBus.subscriberCount),
             ] as [String: AnyCodable]),
         ]
 
         return JSONRPCResponse(result: AnyCodable(result), id: id)
+    }
+
+    // MARK: - subscribe (returns subscription ID, streaming handled by Server)
+
+    private func handleSubscribe(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        let appFilter = params["app"]?.value as? String
+        let typesStr = params["types"]?.value as? String
+
+        // Return subscription parameters for Server to wire up streaming
+        let result: [String: AnyCodable] = [
+            "streaming": AnyCodable(true),
+            "app_filter": AnyCodable(appFilter),
+            "type_filters": AnyCodable(typesStr),
+        ]
+        return JSONRPCResponse(result: AnyCodable(result), id: id)
+    }
+
+    // MARK: - events (get recent events)
+
+    private func handleEvents(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        let appFilter = params["app"]?.value as? String
+        let typesStr = params["types"]?.value as? String
+        let limit = params["limit"]?.value as? Int
+        let typeFilters: Set<String>? = typesStr.map { Set($0.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }) }
+
+        let events = eventBus.getRecentEvents(appFilter: appFilter, typeFilters: typeFilters, limit: limit)
+
+        let encoded = events.map { event -> AnyCodable in
+            var dict: [String: AnyCodable] = [
+                "timestamp": AnyCodable(event.timestamp),
+                "type": AnyCodable(event.type),
+            ]
+            if let app = event.app { dict["app"] = AnyCodable(app) }
+            if let bid = event.bundleId { dict["bundle_id"] = AnyCodable(bid) }
+            if let pid = event.pid { dict["pid"] = AnyCodable(Int(pid)) }
+            if let details = event.details { dict["details"] = AnyCodable(details) }
+            return AnyCodable(dict)
+        }
+
+        return JSONRPCResponse(result: AnyCodable(encoded.map { $0 }), id: id)
     }
 
     // MARK: - Helpers

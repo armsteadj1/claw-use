@@ -2,11 +2,16 @@ import Foundation
 import Network
 import AgentViewCore
 
-/// UDS server that accepts connections and dispatches JSON-RPC requests
+/// UDS server that accepts connections and dispatches JSON-RPC requests.
+/// Supports streaming for event subscriptions.
 final class Server {
     private var listener: NWListener?
     private let router: Router
     private let queue = DispatchQueue(label: "agentviewd.server")
+
+    /// Active streaming connections: subscription ID -> connection
+    private var streamingConnections: [String: NWConnection] = [:]
+    private let streamLock = NSLock()
 
     init(router: Router) {
         self.router = router
@@ -51,6 +56,14 @@ final class Server {
     }
 
     func stop() {
+        // Clean up streaming connections
+        streamLock.lock()
+        for (subId, _) in streamingConnections {
+            router.eventBus.unsubscribe(subId)
+        }
+        streamingConnections.removeAll()
+        streamLock.unlock()
+
         listener?.cancel()
         listener = nil
     }
@@ -70,6 +83,7 @@ final class Server {
             }
 
             if isComplete || error != nil {
+                self.cleanupConnection(connection)
                 connection.cancel()
                 return
             }
@@ -80,17 +94,71 @@ final class Server {
     }
 
     private func processData(_ data: Data, on connection: NWConnection) {
-        let response: JSONRPCResponse
-
+        let request: JSONRPCRequest
         do {
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
-            let request = try decoder.decode(JSONRPCRequest.self, from: data)
-            response = router.handle(request)
+            request = try decoder.decode(JSONRPCRequest.self, from: data)
         } catch {
-            response = JSONRPCResponse(error: .parseError, id: nil)
+            sendResponse(JSONRPCResponse(error: .parseError, id: nil), on: connection)
+            return
         }
 
+        // Handle subscribe specially — sets up streaming
+        if request.method == "subscribe" {
+            setupStreaming(request: request, on: connection)
+            return
+        }
+
+        let response = router.handle(request)
+        sendResponse(response, on: connection)
+    }
+
+    private func setupStreaming(request: JSONRPCRequest, on connection: NWConnection) {
+        let params = request.params ?? [:]
+        let appFilter = params["app"]?.value as? String
+        let typesStr = params["types"]?.value as? String
+        let typeFilters: Set<String>? = typesStr.map {
+            Set($0.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) })
+        }
+
+        // Subscribe to events and stream them to the connection
+        let subId = router.eventBus.subscribe(appFilter: appFilter, typeFilters: typeFilters) { [weak self] event in
+            self?.sendEvent(event, on: connection)
+        }
+
+        streamLock.lock()
+        streamingConnections[subId] = connection
+        streamLock.unlock()
+
+        // Send initial ack response
+        let ack: [String: AnyCodable] = [
+            "subscribed": AnyCodable(true),
+            "subscription_id": AnyCodable(subId),
+            "app_filter": AnyCodable(appFilter),
+            "type_filters": AnyCodable(typesStr),
+        ]
+        sendResponse(JSONRPCResponse(result: AnyCodable(ack), id: request.id), on: connection)
+
+        // Keep reading to detect disconnect
+        receiveMessage(on: connection)
+    }
+
+    private func sendEvent(_ event: AgentViewEvent, on connection: NWConnection) {
+        do {
+            var eventData = try JSONOutput.encode(event)
+            eventData.append(contentsOf: [0x0A]) // newline
+            connection.send(content: eventData, completion: .contentProcessed({ error in
+                if let error = error {
+                    log("Event send error: \(error)")
+                }
+            }))
+        } catch {
+            log("Event encode error: \(error)")
+        }
+    }
+
+    private func sendResponse(_ response: JSONRPCResponse, on connection: NWConnection) {
         do {
             var responseData = try JSONOutput.encode(response)
             responseData.append(contentsOf: [0x0A]) // newline delimiter
@@ -102,6 +170,16 @@ final class Server {
         } catch {
             log("Response encode error: \(error)")
         }
+    }
+
+    private func cleanupConnection(_ connection: NWConnection) {
+        streamLock.lock()
+        let matchingIds = streamingConnections.filter { $0.value === connection }.map { $0.key }
+        for subId in matchingIds {
+            streamingConnections.removeValue(forKey: subId)
+            router.eventBus.unsubscribe(subId)
+        }
+        streamLock.unlock()
     }
 }
 

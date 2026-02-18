@@ -28,7 +28,7 @@ func removeSocketFile() {
 
 // MARK: - Signal handling
 
-func setupSignalHandlers(server: Server, screenState: ScreenState, cdpPool: CDPConnectionPool) {
+func setupSignalHandlers(server: Server, screenState: ScreenState, cdpPool: CDPConnectionPool, eventBus: EventBus) {
     let signalCallback: @convention(c) (Int32) -> Void = { sig in
         log("Received signal \(sig), shutting down...")
         removePidFile()
@@ -49,10 +49,17 @@ let wakeClient = WakeClient.fromConfig()
 
 // Initialize components
 let screenState = ScreenState()
+let eventBus = EventBus()
+let snapshotCache = SnapshotCache()
 
-// Wire screen state changes to wake events
+// Wire screen state changes to wake events AND event bus
 screenState.onChange = { event, state in
     log("Screen event: \(event) — screen=\(state.screen), display=\(state.display)")
+
+    // Publish to event bus
+    eventBus.publishScreenEvent(event, state: state)
+
+    // Notify gateway
     switch event {
     case "screen_unlocked":
         wakeClient.screenUnlocked()
@@ -69,6 +76,9 @@ screenState.onChange = { event, state in
 
 screenState.startObserving()
 
+// Start event bus monitoring (app lifecycle + AX notifications)
+eventBus.startMonitoring()
+
 let cdpPool = CDPConnectionPool()
 cdpPool.start()
 
@@ -83,14 +93,15 @@ transportRouter.register(transport: cdpTransport)
 transportRouter.register(transport: appleScriptTransport)
 transportRouter.configureDefaults()
 
-let router = Router(screenState: screenState, cdpPool: cdpPool, transportRouter: transportRouter)
+let router = Router(screenState: screenState, cdpPool: cdpPool, transportRouter: transportRouter,
+                    snapshotCache: snapshotCache, eventBus: eventBus)
 let server = Server(router: router)
 
 // Write PID file
 writePidFile()
 
 // Setup signal handlers
-setupSignalHandlers(server: server, screenState: screenState, cdpPool: cdpPool)
+setupSignalHandlers(server: server, screenState: screenState, cdpPool: cdpPool, eventBus: eventBus)
 
 // Start server
 do {
@@ -103,6 +114,8 @@ do {
 
 log("agentviewd ready (pid \(ProcessInfo.processInfo.processIdentifier))")
 log("  transports: ax, cdp, applescript")
+log("  event bus: monitoring app lifecycle + AX notifications")
+log("  cache: TTL ax=\(snapshotCache.axTTL)s cdp=\(snapshotCache.cdpTTL)s applescript=\(snapshotCache.applescriptTTL)s")
 
 // Run the event loop
 RunLoop.main.run()

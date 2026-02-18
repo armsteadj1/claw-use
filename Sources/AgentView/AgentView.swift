@@ -10,7 +10,7 @@ struct AgentView: ParsableCommand {
         commandName: "agentview",
         abstract: "Read macOS Accessibility APIs and expose structured UI state to AI agents.",
         version: "0.3.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self]
     )
 }
 
@@ -817,5 +817,27 @@ struct Pipe: ParsableCommand {
         if !element.actions.isEmpty && score > 0 { score += 5 }
 
         return score
+    }
+}
+
+// MARK: - watch
+
+struct Watch: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Stream events from the daemon as JSONL (one event per line)"
+    )
+
+    @Option(name: .long, help: "Filter events by app name (partial match)")
+    var app: String?
+
+    @Option(name: .long, help: "Filter by event types (comma-separated, e.g. app.launched,ax.focus_changed)")
+    var types: String?
+
+    func run() throws {
+        var params: [String: AnyCodable] = [:]
+        if let app = app { params["app"] = AnyCodable(app) }
+        if let types = types { params["types"] = AnyCodable(types) }
+
+        try DaemonClient.stream(params: params)
     }
 }

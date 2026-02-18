@@ -722,3 +722,504 @@ final class MockTransport: Transport {
     // Either "does not support" (if AX permission granted) or accessibility error
     #expect(result.error != nil)
 }
+
+// MARK: - SnapshotCache Tests
+
+@Test func snapshotCacheInitialStats() {
+    let cache = SnapshotCache()
+    let stats = cache.stats
+    #expect(stats.entries == 0)
+    #expect(stats.hits == 0)
+    #expect(stats.misses == 0)
+    #expect(stats.hitRate == 0.0)
+}
+
+@Test func snapshotCacheMissOnEmpty() {
+    let cache = SnapshotCache()
+    let entry = cache.get(app: "TestApp")
+    #expect(entry == nil)
+    #expect(cache.stats.misses == 1)
+}
+
+@Test func snapshotCachePutAndGet() {
+    let cache = SnapshotCache()
+    let snapshot = makeTestSnapshot(app: "TestApp")
+
+    let _ = cache.put(app: "TestApp", snapshot: snapshot, transport: "ax")
+    let entry = cache.get(app: "TestApp")
+
+    #expect(entry != nil)
+    #expect(entry?.snapshot.app == "TestApp")
+    #expect(entry?.transport == "ax")
+    #expect(cache.stats.entries == 1)
+    #expect(cache.stats.hits == 1)
+}
+
+@Test func snapshotCacheCaseInsensitive() {
+    let cache = SnapshotCache()
+    let snapshot = makeTestSnapshot(app: "Safari")
+
+    let _ = cache.put(app: "Safari", snapshot: snapshot, transport: "ax")
+    let entry = cache.get(app: "safari")
+
+    #expect(entry != nil)
+    #expect(entry?.snapshot.app == "Safari")
+}
+
+@Test func snapshotCacheTTLExpiry() throws {
+    let cache = SnapshotCache()
+    cache.axTTL = 0.1  // 100ms TTL for test
+
+    let snapshot = makeTestSnapshot(app: "TestApp")
+    let _ = cache.put(app: "TestApp", snapshot: snapshot, transport: "ax")
+
+    // Should be fresh immediately
+    #expect(cache.get(app: "TestApp") != nil)
+
+    // Wait for TTL to expire
+    Thread.sleep(forTimeInterval: 0.15)
+
+    // Should be expired now
+    #expect(cache.get(app: "TestApp") == nil)
+}
+
+@Test func snapshotCacheDifferentTTLPerTransport() {
+    let cache = SnapshotCache()
+    cache.axTTL = 0.1       // 100ms
+    cache.cdpTTL = 0.5      // 500ms
+
+    let snap1 = makeTestSnapshot(app: "Finder")
+    let snap2 = makeTestSnapshot(app: "Obsidian")
+
+    let _ = cache.put(app: "Finder", snapshot: snap1, transport: "ax")
+    let _ = cache.put(app: "Obsidian", snapshot: snap2, transport: "cdp")
+
+    Thread.sleep(forTimeInterval: 0.15)
+
+    // AX cache should be expired
+    #expect(cache.get(app: "Finder") == nil)
+    // CDP cache should still be fresh
+    #expect(cache.get(app: "Obsidian") != nil)
+}
+
+@Test func snapshotCacheInvalidate() {
+    let cache = SnapshotCache()
+    let snapshot = makeTestSnapshot(app: "TestApp")
+
+    let _ = cache.put(app: "TestApp", snapshot: snapshot, transport: "ax")
+    #expect(cache.get(app: "TestApp") != nil)
+
+    cache.invalidate(app: "TestApp")
+    #expect(cache.get(app: "TestApp") == nil)
+}
+
+@Test func snapshotCacheInvalidateAll() {
+    let cache = SnapshotCache()
+
+    let _ = cache.put(app: "App1", snapshot: makeTestSnapshot(app: "App1"), transport: "ax")
+    let _ = cache.put(app: "App2", snapshot: makeTestSnapshot(app: "App2"), transport: "ax")
+
+    cache.invalidateAll()
+    #expect(cache.get(app: "App1") == nil)
+    #expect(cache.get(app: "App2") == nil)
+}
+
+@Test func snapshotCacheHitRateTracking() {
+    let cache = SnapshotCache()
+
+    let _ = cache.put(app: "TestApp", snapshot: makeTestSnapshot(app: "TestApp"), transport: "ax")
+
+    // 2 hits, 1 miss
+    let _ = cache.get(app: "TestApp")  // hit
+    let _ = cache.get(app: "TestApp")  // hit
+    let _ = cache.get(app: "NonExistent")  // miss
+
+    let stats = cache.stats
+    #expect(stats.hits == 2)
+    #expect(stats.misses == 1)
+    #expect(stats.hitRate > 0.66)
+    #expect(stats.hitRate < 0.67)
+}
+
+// MARK: - RefStabilityManager Tests
+
+@Test func refStabilityInitialAssignment() {
+    let manager = RefStabilityManager()
+    let elements = [
+        makeTestElement(ref: "tmp1", role: "button", label: "Save"),
+        makeTestElement(ref: "tmp2", role: "textfield", label: "Name"),
+    ]
+
+    let stabilized = manager.stabilize(elements: elements)
+    #expect(stabilized.count == 2)
+    #expect(stabilized[0].ref == "e1")
+    #expect(stabilized[0].label == "Save")
+    #expect(stabilized[1].ref == "e2")
+    #expect(stabilized[1].label == "Name")
+}
+
+@Test func refStabilityPersistsAcrossSnapshots() {
+    let manager = RefStabilityManager()
+
+    // First snapshot
+    let elements1 = [
+        makeTestElement(ref: "tmp1", role: "button", label: "Save"),
+        makeTestElement(ref: "tmp2", role: "textfield", label: "Name"),
+    ]
+    let result1 = manager.stabilize(elements: elements1)
+    #expect(result1[0].ref == "e1")
+    #expect(result1[1].ref == "e2")
+
+    // Second snapshot — same elements should keep same refs
+    let elements2 = [
+        makeTestElement(ref: "new1", role: "button", label: "Save"),
+        makeTestElement(ref: "new2", role: "textfield", label: "Name"),
+    ]
+    let result2 = manager.stabilize(elements: elements2)
+    #expect(result2[0].ref == "e1")  // Same ref!
+    #expect(result2[1].ref == "e2")  // Same ref!
+}
+
+@Test func refStabilityNewElementGetsNextRef() {
+    let manager = RefStabilityManager()
+
+    // First snapshot: 2 elements
+    let elements1 = [
+        makeTestElement(ref: "a", role: "button", label: "Save"),
+        makeTestElement(ref: "b", role: "button", label: "Cancel"),
+    ]
+    let _ = manager.stabilize(elements: elements1)
+
+    // Second snapshot: original 2 + a new one
+    let elements2 = [
+        makeTestElement(ref: "a", role: "button", label: "Save"),
+        makeTestElement(ref: "b", role: "button", label: "Cancel"),
+        makeTestElement(ref: "c", role: "button", label: "Delete"),
+    ]
+    let result2 = manager.stabilize(elements: elements2)
+    #expect(result2[0].ref == "e1")  // Save keeps e1
+    #expect(result2[1].ref == "e2")  // Cancel keeps e2
+    #expect(result2[2].ref == "e3")  // Delete gets e3
+}
+
+@Test func refStabilityTombstoning() {
+    let manager = RefStabilityManager()
+    manager.tombstoneDuration = 60.0
+
+    // First snapshot: 2 elements
+    let elements1 = [
+        makeTestElement(ref: "a", role: "button", label: "Save"),
+        makeTestElement(ref: "b", role: "button", label: "Cancel"),
+    ]
+    let _ = manager.stabilize(elements: elements1)
+
+    // Second snapshot: Cancel is gone
+    let elements2 = [
+        makeTestElement(ref: "a", role: "button", label: "Save"),
+    ]
+    let _ = manager.stabilize(elements: elements2)
+
+    // e2 should be tombstoned
+    #expect(manager.tombstoneCount == 1)
+    #expect(manager.mappingCount == 1)
+
+    // New element should get e3 (not e2, which is tombstoned)
+    let elements3 = [
+        makeTestElement(ref: "a", role: "button", label: "Save"),
+        makeTestElement(ref: "c", role: "button", label: "Delete"),
+    ]
+    let result3 = manager.stabilize(elements: elements3)
+    #expect(result3[0].ref == "e1")
+    #expect(result3[1].ref == "e3")  // Skips e2 (tombstoned)
+}
+
+@Test func refStabilityReset() {
+    let manager = RefStabilityManager()
+
+    let elements = [makeTestElement(ref: "a", role: "button", label: "Save")]
+    let _ = manager.stabilize(elements: elements)
+    #expect(manager.mappingCount == 1)
+
+    manager.reset()
+    #expect(manager.mappingCount == 0)
+    #expect(manager.tombstoneCount == 0)
+}
+
+@Test func refStabilityElementReturn() {
+    let manager = RefStabilityManager()
+    manager.tombstoneDuration = 60.0
+
+    // Snapshot 1: element present
+    let _ = manager.stabilize(elements: [
+        makeTestElement(ref: "a", role: "button", label: "Save"),
+    ])
+
+    // Snapshot 2: element gone (tombstoned)
+    let _ = manager.stabilize(elements: [])
+    #expect(manager.tombstoneCount == 1)
+
+    // Snapshot 3: element returns — should reclaim its original ref
+    let result = manager.stabilize(elements: [
+        makeTestElement(ref: "b", role: "button", label: "Save"),
+    ])
+    #expect(result[0].ref == "e1")  // Gets original ref back
+    #expect(manager.tombstoneCount == 0)  // Tombstone cleared
+}
+
+// MARK: - ElementIdentity Tests
+
+@Test func elementIdentityEquality() {
+    let id1 = ElementIdentity(role: "button", title: "Save", identifier: nil)
+    let id2 = ElementIdentity(role: "button", title: "Save", identifier: nil)
+    let id3 = ElementIdentity(role: "button", title: "Cancel", identifier: nil)
+
+    #expect(id1 == id2)
+    #expect(id1 != id3)
+}
+
+@Test func elementIdentityHashing() {
+    let id1 = ElementIdentity(role: "button", title: "Save", identifier: nil)
+    let id2 = ElementIdentity(role: "button", title: "Save", identifier: nil)
+
+    var set = Set<ElementIdentity>()
+    set.insert(id1)
+    set.insert(id2)
+    #expect(set.count == 1)
+}
+
+// MARK: - EventBus Tests
+
+@Test func eventBusPublishAndRetrieve() {
+    let bus = EventBus()
+
+    bus.publish(AgentViewEvent(type: "test.event", app: "TestApp"))
+    bus.publish(AgentViewEvent(type: "test.other", app: "OtherApp"))
+
+    let events = bus.getRecentEvents()
+    #expect(events.count == 2)
+    #expect(events[0].type == "test.event")
+    #expect(events[1].type == "test.other")
+}
+
+@Test func eventBusFilterByApp() {
+    let bus = EventBus()
+
+    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
+    bus.publish(AgentViewEvent(type: "app.launched", app: "Finder"))
+    bus.publish(AgentViewEvent(type: "app.activated", app: "Safari"))
+
+    let safariEvents = bus.getRecentEvents(appFilter: "Safari")
+    #expect(safariEvents.count == 2)
+    #expect(safariEvents.allSatisfy { $0.app == "Safari" })
+}
+
+@Test func eventBusFilterByType() {
+    let bus = EventBus()
+
+    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
+    bus.publish(AgentViewEvent(type: "app.terminated", app: "Safari"))
+    bus.publish(AgentViewEvent(type: "app.launched", app: "Finder"))
+
+    let launchEvents = bus.getRecentEvents(typeFilters: Set(["app.launched"]))
+    #expect(launchEvents.count == 2)
+    #expect(launchEvents.allSatisfy { $0.type == "app.launched" })
+}
+
+@Test func eventBusLimit() {
+    let bus = EventBus()
+
+    for i in 0..<10 {
+        bus.publish(AgentViewEvent(type: "test.\(i)", app: "App"))
+    }
+
+    let limited = bus.getRecentEvents(limit: 3)
+    #expect(limited.count == 3)
+    // Should get the last 3
+    #expect(limited[0].type == "test.7")
+    #expect(limited[1].type == "test.8")
+    #expect(limited[2].type == "test.9")
+}
+
+@Test func eventBusMaxRecentEvents() {
+    let bus = EventBus()
+
+    // Publish more than 100 events
+    for i in 0..<120 {
+        bus.publish(AgentViewEvent(type: "test.\(i)", app: "App"))
+    }
+
+    #expect(bus.eventCount == 100)  // Capped at 100
+    let events = bus.getRecentEvents()
+    #expect(events.count == 100)
+    // Should have the last 100 (events 20-119)
+    #expect(events.first?.type == "test.20")
+    #expect(events.last?.type == "test.119")
+}
+
+@Test func eventBusSubscribeAndCallback() {
+    let bus = EventBus()
+    var received: [AgentViewEvent] = []
+
+    let subId = bus.subscribe { event in
+        received.append(event)
+    }
+
+    bus.publish(AgentViewEvent(type: "test.event", app: "TestApp"))
+    bus.publish(AgentViewEvent(type: "test.other", app: "OtherApp"))
+
+    #expect(received.count == 2)
+    #expect(received[0].type == "test.event")
+
+    bus.unsubscribe(subId)
+    bus.publish(AgentViewEvent(type: "test.after_unsub", app: "TestApp"))
+
+    // Should not receive events after unsubscribe
+    #expect(received.count == 2)
+}
+
+@Test func eventBusSubscribeWithAppFilter() {
+    let bus = EventBus()
+    var received: [AgentViewEvent] = []
+
+    let _ = bus.subscribe(appFilter: "Safari") { event in
+        received.append(event)
+    }
+
+    bus.publish(AgentViewEvent(type: "test.event", app: "Safari"))
+    bus.publish(AgentViewEvent(type: "test.event", app: "Finder"))
+    bus.publish(AgentViewEvent(type: "test.other", app: "Safari"))
+
+    #expect(received.count == 2)
+    #expect(received.allSatisfy { $0.app == "Safari" })
+}
+
+@Test func eventBusSubscribeWithTypeFilter() {
+    let bus = EventBus()
+    var received: [AgentViewEvent] = []
+
+    let _ = bus.subscribe(typeFilters: Set(["app.launched"])) { event in
+        received.append(event)
+    }
+
+    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
+    bus.publish(AgentViewEvent(type: "app.terminated", app: "Safari"))
+    bus.publish(AgentViewEvent(type: "app.launched", app: "Finder"))
+
+    #expect(received.count == 2)
+    #expect(received.allSatisfy { $0.type == "app.launched" })
+}
+
+@Test func eventBusSubscriberCount() {
+    let bus = EventBus()
+    #expect(bus.subscriberCount == 0)
+
+    let id1 = bus.subscribe { _ in }
+    #expect(bus.subscriberCount == 1)
+
+    let id2 = bus.subscribe { _ in }
+    #expect(bus.subscriberCount == 2)
+
+    bus.unsubscribe(id1)
+    #expect(bus.subscriberCount == 1)
+
+    bus.unsubscribe(id2)
+    #expect(bus.subscriberCount == 0)
+}
+
+// MARK: - AgentViewEvent Tests
+
+@Test func agentViewEventEncoding() throws {
+    let event = AgentViewEvent(
+        type: "app.launched",
+        app: "Safari",
+        bundleId: "com.apple.Safari",
+        pid: 1234,
+        details: ["key": AnyCodable("value")]
+    )
+
+    let data = try JSONOutput.encode(event)
+    let json = String(data: data, encoding: .utf8)!
+    #expect(json.contains("app.launched"))
+    #expect(json.contains("Safari"))
+    #expect(json.contains("1234"))
+}
+
+@Test func agentViewEventTypeRawValues() {
+    #expect(AgentViewEventType.appLaunched.rawValue == "app.launched")
+    #expect(AgentViewEventType.appTerminated.rawValue == "app.terminated")
+    #expect(AgentViewEventType.appActivated.rawValue == "app.activated")
+    #expect(AgentViewEventType.appDeactivated.rawValue == "app.deactivated")
+    #expect(AgentViewEventType.focusChanged.rawValue == "ax.focus_changed")
+    #expect(AgentViewEventType.valueChanged.rawValue == "ax.value_changed")
+    #expect(AgentViewEventType.windowCreated.rawValue == "ax.window_created")
+    #expect(AgentViewEventType.elementDestroyed.rawValue == "ax.element_destroyed")
+    #expect(AgentViewEventType.screenLocked.rawValue == "screen.locked")
+    #expect(AgentViewEventType.screenUnlocked.rawValue == "screen.unlocked")
+    #expect(AgentViewEventType.displaySleep.rawValue == "screen.display_sleep")
+    #expect(AgentViewEventType.displayWake.rawValue == "screen.display_wake")
+}
+
+// MARK: - EventSubscription Filter Tests
+
+@Test func eventSubscriptionMatchesAll() {
+    let sub = EventSubscription(id: "test", callback: { _ in })
+    let event = AgentViewEvent(type: "app.launched", app: "Safari")
+    #expect(sub.matches(event) == true)
+}
+
+@Test func eventSubscriptionAppFilter() {
+    let sub = EventSubscription(id: "test", appFilter: "Safari", callback: { _ in })
+    #expect(sub.matches(AgentViewEvent(type: "app.launched", app: "Safari")) == true)
+    #expect(sub.matches(AgentViewEvent(type: "app.launched", app: "Finder")) == false)
+}
+
+@Test func eventSubscriptionTypeFilter() {
+    let sub = EventSubscription(id: "test", typeFilters: Set(["app.launched", "app.terminated"]), callback: { _ in })
+    #expect(sub.matches(AgentViewEvent(type: "app.launched", app: "Safari")) == true)
+    #expect(sub.matches(AgentViewEvent(type: "app.terminated", app: "Safari")) == true)
+    #expect(sub.matches(AgentViewEvent(type: "app.activated", app: "Safari")) == false)
+}
+
+// MARK: - Test Helpers
+
+func makeTestSnapshot(app: String) -> AppSnapshot {
+    AppSnapshot(
+        app: app,
+        bundleId: "com.test.\(app.lowercased())",
+        pid: 123,
+        timestamp: ISO8601DateFormatter().string(from: Date()),
+        window: WindowInfo(title: "Test Window", size: nil, focused: true),
+        meta: [:],
+        content: ContentTree(
+            summary: "Test",
+            sections: [
+                Section(
+                    role: "content",
+                    label: "Main",
+                    elements: [
+                        Element(ref: "e1", role: "button", label: "Save", value: nil,
+                                placeholder: nil, enabled: true, focused: false, selected: false, actions: ["click"]),
+                        Element(ref: "e2", role: "textfield", label: "Name", value: AnyCodable("test"),
+                                placeholder: "Enter name", enabled: true, focused: false, selected: false, actions: []),
+                    ]
+                )
+            ]
+        ),
+        actions: [],
+        stats: SnapshotStats(totalNodes: 10, prunedNodes: 5, enrichedElements: 2, walkTimeMs: 10, enrichTimeMs: 5)
+    )
+}
+
+func makeTestElement(ref: String, role: String, label: String) -> Element {
+    Element(
+        ref: ref,
+        role: role,
+        label: label,
+        value: nil,
+        placeholder: nil,
+        enabled: true,
+        focused: false,
+        selected: false,
+        actions: ["click"]
+    )
+}

@@ -129,6 +129,104 @@ struct DaemonClient {
         return true
     }
 
+    /// Send a subscribe request and stream events as JSONL to stdout.
+    /// Blocks until the connection is closed or SIGINT.
+    static func stream(params: [String: AnyCodable]? = nil) throws {
+        // Ensure daemon is running
+        if !isDaemonRunning() {
+            try startDaemon()
+            var ready = false
+            for _ in 0..<20 {
+                Thread.sleep(forTimeInterval: 0.25)
+                if isDaemonRunning() {
+                    ready = true
+                    break
+                }
+            }
+            if !ready {
+                throw ClientError.daemonStartFailed
+            }
+        }
+
+        let request = JSONRPCRequest(method: "subscribe", params: params)
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        var requestData = try encoder.encode(request)
+        requestData.append(contentsOf: [0x0A])
+
+        var connectionError: Error?
+
+        let endpoint = NWEndpoint.unix(path: socketPath)
+        let nwParams = NWParameters()
+        nwParams.defaultProtocolStack.transportProtocol = NWProtocolTCP.Options()
+        let connection = NWConnection(to: endpoint, using: nwParams)
+
+        // Use a dispatch source for SIGINT instead of signal() to avoid closure capture issues
+        let sigSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        signal(SIGINT, SIG_IGN)  // Ignore default handler so dispatch source works
+        sigSource.setEventHandler {
+            connection.cancel()
+        }
+        sigSource.resume()
+
+        let semaphore = DispatchSemaphore(value: 0)
+
+        func readLoop() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { data, _, isComplete, error in
+                if let data = data, !data.isEmpty {
+                    // Print each line of data to stdout
+                    if let str = String(data: data, encoding: .utf8) {
+                        // May contain multiple newline-delimited messages
+                        for line in str.split(separator: "\n", omittingEmptySubsequences: true) {
+                            Swift.print(line)
+                            fflush(stdout)
+                        }
+                    }
+                }
+                if isComplete || error != nil {
+                    semaphore.signal()
+                    return
+                }
+                readLoop()
+            }
+        }
+
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                // Send subscribe request
+                connection.send(content: requestData, completion: .contentProcessed({ error in
+                    if let error = error {
+                        connectionError = error
+                        semaphore.signal()
+                        return
+                    }
+                    // Start reading events
+                    readLoop()
+                }))
+            case .failed(let error):
+                connectionError = error
+                semaphore.signal()
+            case .cancelled:
+                semaphore.signal()
+            default:
+                break
+            }
+        }
+
+        let queue = DispatchQueue(label: "agentview.stream")
+        connection.start(queue: queue)
+
+        // Block until disconnected or SIGINT
+        semaphore.wait()
+        sigSource.cancel()
+        connection.cancel()
+
+        if let error = connectionError {
+            throw error
+        }
+    }
+
     // MARK: - Private
 
     private static func sendViaSocket(data: Data) throws -> JSONRPCResponse {
