@@ -51,7 +51,18 @@ screenState.startObserving()
 let cdpPool = CDPConnectionPool()
 cdpPool.start()
 
-let router = Router(screenState: screenState, cdpPool: cdpPool)
+// Initialize transport layer
+let transportRouter = TransportRouter()
+let axTransport = AXTransport()
+let cdpTransport = CDPTransport(pool: cdpPool)
+let appleScriptTransport = AppleScriptTransport()
+
+transportRouter.register(transport: axTransport)
+transportRouter.register(transport: cdpTransport)
+transportRouter.register(transport: appleScriptTransport)
+transportRouter.configureDefaults()
+
+let router = Router(screenState: screenState, cdpPool: cdpPool, transportRouter: transportRouter)
 let server = Server(router: router)
 
 // Write PID file
@@ -70,6 +81,7 @@ do {
 }
 
 log("agentviewd ready (pid \(ProcessInfo.processInfo.processIdentifier))")
+log("  transports: ax, cdp, applescript")
 
 // Run the event loop
 RunLoop.main.run()

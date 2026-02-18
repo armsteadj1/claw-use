@@ -3,14 +3,17 @@ import Foundation
 import AgentViewCore
 
 /// JSON-RPC method router — dispatches to the appropriate handler
+/// Now uses the Transport layer with self-healing fallback chain
 final class Router {
     private let startTime = Date()
     private let screenState: ScreenState
     private let cdpPool: CDPConnectionPool
+    private let transportRouter: TransportRouter
 
-    init(screenState: ScreenState, cdpPool: CDPConnectionPool) {
+    init(screenState: ScreenState, cdpPool: CDPConnectionPool, transportRouter: TransportRouter) {
         self.screenState = screenState
         self.cdpPool = cdpPool
+        self.transportRouter = transportRouter
     }
 
     func handle(_ request: JSONRPCRequest) -> JSONRPCResponse {
@@ -54,13 +57,9 @@ final class Router {
         return JSONRPCResponse(result: AnyCodable(encoded.map { AnyCodable($0) }), id: id)
     }
 
-    // MARK: - snapshot
+    // MARK: - snapshot (routed through transport layer)
 
     private func handleSnapshot(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
-        guard AXBridge.checkAccessibilityPermission() else {
-            return JSONRPCResponse(error: JSONRPCError(code: -1, message: "Accessibility permission not granted"), id: id)
-        }
-
         let appName = params["app"]?.value as? String
         let pid = params["pid"]?.value as? Int
         let depth = (params["depth"]?.value as? Int) ?? 50
@@ -69,25 +68,21 @@ final class Router {
             return JSONRPCResponse(error: JSONRPCError(code: -2, message: "App not found"), id: id)
         }
 
-        let enricher = Enricher()
-        let refMap = RefMap()
-        let snapshot = enricher.snapshot(app: runningApp, maxDepth: depth, refMap: refMap)
+        let action = TransportAction(
+            type: "snapshot",
+            app: runningApp.localizedName ?? "Unknown",
+            bundleId: runningApp.bundleIdentifier,
+            pid: runningApp.processIdentifier,
+            depth: depth
+        )
 
-        guard let data = try? JSONOutput.encode(snapshot),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return JSONRPCResponse(error: .internalError, id: id)
-        }
-
-        return JSONRPCResponse(result: convertToAnyCodable(dict), id: id)
+        let result = transportRouter.execute(action: action)
+        return transportResultToResponse(result, id: id)
     }
 
-    // MARK: - act
+    // MARK: - act (routed through transport layer with fallback)
 
     private func handleAct(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
-        guard AXBridge.checkAccessibilityPermission() else {
-            return JSONRPCResponse(error: JSONRPCError(code: -1, message: "Accessibility permission not granted"), id: id)
-        }
-
         let appName = params["app"]?.value as? String
         let pid = params["pid"]?.value as? Int
         let actionStr = params["action"]?.value as? String ?? ""
@@ -101,38 +96,20 @@ final class Router {
             return JSONRPCResponse(error: JSONRPCError(code: -2, message: "App not found"), id: id)
         }
 
-        // Handle script action
-        if actionStr.lowercased() == "script" {
-            return handleScript(app: runningApp, expr: expr, timeout: timeout, id: id)
-        }
+        let action = TransportAction(
+            type: actionStr.lowercased(),
+            app: runningApp.localizedName ?? "Unknown",
+            bundleId: runningApp.bundleIdentifier,
+            pid: runningApp.processIdentifier,
+            ref: ref,
+            value: value,
+            expr: expr,
+            port: port,
+            timeout: timeout
+        )
 
-        // Handle eval action — try persistent pool first
-        if actionStr.lowercased() == "eval" {
-            return handleEval(app: runningApp, expr: expr, port: port, id: id)
-        }
-
-        // Standard AX actions
-        guard let actionType = ActionExecutor.ActionType(rawValue: actionStr.lowercased()) else {
-            return JSONRPCResponse(error: JSONRPCError(code: -3, message: "Unknown action: \(actionStr)"), id: id)
-        }
-
-        guard let ref = ref else {
-            return JSONRPCResponse(error: JSONRPCError(code: -4, message: "--ref required for \(actionStr)"), id: id)
-        }
-
-        let enricher = Enricher()
-        let refMap = RefMap()
-        _ = enricher.snapshot(app: runningApp, refMap: refMap)
-
-        let executor = ActionExecutor(refMap: refMap)
-        let result = executor.execute(action: actionType, ref: ref, value: value, on: runningApp, enricher: enricher)
-
-        guard let data = try? JSONOutput.encode(result),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return JSONRPCResponse(error: .internalError, id: id)
-        }
-
-        return JSONRPCResponse(result: convertToAnyCodable(dict), id: id)
+        let result = transportRouter.execute(action: action)
+        return transportResultToResponse(result, id: id)
     }
 
     // MARK: - pipe
@@ -143,9 +120,8 @@ final class Router {
         let actionStr = params["action"]?.value as? String ?? ""
         let matchStr = params["match"]?.value as? String
         let value = params["value"]?.value as? String
-        // expr, port, timeout handled by handleAct for eval/script fast-path
 
-        // eval/script fast-path
+        // eval/script fast-path — route through transport layer
         if actionStr.lowercased() == "eval" || actionStr.lowercased() == "script" {
             return handleAct(params: params, id: id)
         }
@@ -233,13 +209,40 @@ final class Router {
         return JSONRPCResponse(result: AnyCodable(output), id: id)
     }
 
-    // MARK: - status
+    // MARK: - status (Issue #19: per-app transport health)
 
     private func handleStatus(id: AnyCodable?) -> JSONRPCResponse {
         let uptime = Int(Date().timeIntervalSince(startTime))
         let state = screenState.currentState()
         let apps = AXBridge.listApps()
         let cdpConns = cdpPool.connectionInfos()
+
+        // Per-app transport health
+        let appHealths = transportRouter.appTransportHealths(apps: apps)
+        let appHealthEncoded = appHealths.map { health in
+            AnyCodable([
+                "name": AnyCodable(health.name),
+                "bundle_id": AnyCodable(health.bundleId),
+                "available_transports": AnyCodable(health.availableTransports.map { AnyCodable($0) }),
+                "current_health": AnyCodable(
+                    health.currentHealth.reduce(into: [String: AnyCodable]()) { dict, kv in
+                        dict[kv.key] = AnyCodable(kv.value)
+                    }
+                ),
+                "last_used_transport": AnyCodable(health.lastUsedTransport),
+                "success_rate": AnyCodable(
+                    health.successRate.reduce(into: [String: AnyCodable]()) { dict, kv in
+                        dict[kv.key] = AnyCodable(kv.value)
+                    }
+                ),
+            ] as [String: AnyCodable])
+        }
+
+        // Transport-level health summary
+        let transportHealth = transportRouter.transportHealthSummary()
+        let transportHealthEncoded = transportHealth.reduce(into: [String: AnyCodable]()) { dict, kv in
+            dict[kv.key] = AnyCodable(kv.value)
+        }
 
         let result: [String: AnyCodable] = [
             "daemon": AnyCodable("running"),
@@ -249,6 +252,8 @@ final class Router {
             "display": AnyCodable(state.display),
             "frontmost_app": AnyCodable(state.frontmostApp),
             "app_count": AnyCodable(apps.count),
+            "transport_health": AnyCodable(transportHealthEncoded),
+            "apps": AnyCodable(appHealthEncoded),
             "cdp_connections": AnyCodable(cdpConns.map { conn in
                 AnyCodable([
                     "port": AnyCodable(conn.port),
@@ -257,6 +262,10 @@ final class Router {
                     "last_ping_ms": AnyCodable(conn.lastPingMs),
                 ] as [String: AnyCodable])
             }),
+            "cache": AnyCodable([
+                "entries": AnyCodable(0),
+                "hit_rate": AnyCodable(0.0),
+            ] as [String: AnyCodable]),
         ]
 
         return JSONRPCResponse(result: AnyCodable(result), id: id)
@@ -274,102 +283,23 @@ final class Router {
         return nil
     }
 
-    private func handleScript(app: NSRunningApplication, expr: String?, timeout: Int, id: AnyCodable?) -> JSONRPCResponse {
-        guard let expression = expr else {
-            return JSONRPCResponse(error: JSONRPCError(code: -4, message: "script requires --expr"), id: id)
+    private func transportResultToResponse(_ result: TransportResult, id: AnyCodable?) -> JSONRPCResponse {
+        if let data = result.data {
+            var output = data
+            output["transport_used"] = AnyCodable(result.transportUsed)
+            return JSONRPCResponse(result: AnyCodable(output), id: id)
         }
-
-        let appName = app.localizedName ?? "Unknown"
-        let script: String
-        if expression.lowercased().hasPrefix("tell application") {
-            script = expression
-        } else {
-            script = "tell application \"\(appName)\"\n\(expression)\nend tell"
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-
-        do {
-            try process.run()
-        } catch {
-            return JSONRPCResponse(error: JSONRPCError(code: -7, message: "Failed to launch osascript: \(error)"), id: id)
-        }
-
-        let deadline = DispatchTime.now() + .seconds(timeout)
-        let group = DispatchGroup()
-        group.enter()
-        DispatchQueue.global().async {
-            process.waitUntilExit()
-            group.leave()
-        }
-
-        if group.wait(timeout: deadline) == .timedOut {
-            process.terminate()
-            let result: [String: AnyCodable] = [
-                "success": AnyCodable(false),
-                "app": AnyCodable(appName),
-                "action": AnyCodable("script"),
-                "error": AnyCodable("AppleScript timed out after \(timeout)s"),
-            ]
-            return JSONRPCResponse(result: AnyCodable(result), id: id)
-        }
-
-        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-        let stdout = String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let stderrStr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        if process.terminationStatus != 0 {
-            let result: [String: AnyCodable] = [
-                "success": AnyCodable(false),
-                "app": AnyCodable(appName),
-                "action": AnyCodable("script"),
-                "error": AnyCodable(stderrStr.isEmpty ? "Exit code \(process.terminationStatus)" : stderrStr),
-            ]
-            return JSONRPCResponse(result: AnyCodable(result), id: id)
-        }
-
-        let result: [String: AnyCodable] = [
-            "success": AnyCodable(true),
-            "app": AnyCodable(appName),
-            "action": AnyCodable("script"),
-            "result": AnyCodable(stdout),
-        ]
-        return JSONRPCResponse(result: AnyCodable(result), id: id)
-    }
-
-    private func handleEval(app: NSRunningApplication, expr: String?, port: Int, id: AnyCodable?) -> JSONRPCResponse {
-        guard let expression = expr else {
-            return JSONRPCResponse(error: JSONRPCError(code: -4, message: "eval requires --expr"), id: id)
-        }
-
-        let appName = app.localizedName ?? "Unknown"
-
-        do {
-            // Try persistent pool first
-            let resultValue = try cdpPool.evaluate(port: port, expression: expression)
-            let result: [String: AnyCodable] = [
+        if result.success {
+            let output: [String: AnyCodable] = [
                 "success": AnyCodable(true),
-                "app": AnyCodable(appName),
-                "pid": AnyCodable(app.processIdentifier),
-                "action": AnyCodable("eval"),
-                "result": AnyCodable(resultValue ?? "undefined"),
+                "transport_used": AnyCodable(result.transportUsed),
             ]
-            return JSONRPCResponse(result: AnyCodable(result), id: id)
-        } catch {
-            let result: [String: AnyCodable] = [
-                "success": AnyCodable(false),
-                "error": AnyCodable("CDP eval failed: \(error)"),
-            ]
-            return JSONRPCResponse(result: AnyCodable(result), id: id)
+            return JSONRPCResponse(result: AnyCodable(output), id: id)
         }
+        return JSONRPCResponse(
+            error: JSONRPCError(code: -10, message: result.error ?? "Transport execution failed"),
+            id: id
+        )
     }
 
     private func fuzzyScore(needle: String, element: Element, sectionLabel: String?) -> Int {
