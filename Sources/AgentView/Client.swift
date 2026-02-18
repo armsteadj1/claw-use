@@ -58,10 +58,43 @@ struct DaemonClient {
 
     /// Auto-start the daemon via fork+exec
     static func startDaemon() throws {
-        // Find agentviewd binary next to the current binary
+        // Find agentviewd binary — check same dir as CLI, then PATH
+        let fm = FileManager.default
+        var daemonPath = ""
+
+        // 1. Next to current binary (full path)
         let currentExe = CommandLine.arguments[0]
-        let dir = (currentExe as NSString).deletingLastPathComponent
-        let daemonPath = dir + "/agentviewd"
+        let sameDir = (currentExe as NSString).deletingLastPathComponent + "/agentviewd"
+        if fm.isExecutableFile(atPath: sameDir) {
+            daemonPath = sameDir
+        }
+
+        // 2. Resolve via /usr/bin/which
+        if daemonPath.isEmpty {
+            let which = Process()
+            which.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+            which.arguments = ["agentviewd"]
+            let pipe = Foundation.Pipe()
+            which.standardOutput = pipe
+            try? which.run()
+            which.waitUntilExit()
+            let resolved = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if fm.isExecutableFile(atPath: resolved) {
+                daemonPath = resolved
+            }
+        }
+
+        // 3. Common locations
+        if daemonPath.isEmpty {
+            let home = fm.homeDirectoryForCurrentUser.path
+            for candidate in ["\(home)/.local/bin/agentviewd", "/usr/local/bin/agentviewd"] {
+                if fm.isExecutableFile(atPath: candidate) {
+                    daemonPath = candidate
+                    break
+                }
+            }
+        }
 
         // Check if the daemon binary exists
         guard FileManager.default.isExecutableFile(atPath: daemonPath) else {
