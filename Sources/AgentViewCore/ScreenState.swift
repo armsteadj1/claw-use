@@ -29,6 +29,9 @@ public final class ScreenState {
     private var displayState: DisplayState = .unknown
     private let lock = NSLock()
 
+    /// Called when screen state changes. Args: (event: String, newState: State)
+    public var onChange: ((String, State) -> Void)?
+
     public init() {}
 
     /// Start observing screen state changes via NSWorkspace notifications
@@ -106,23 +109,27 @@ public final class ScreenState {
         lock.lock()
         lockState = .locked
         lock.unlock()
+        onChange?("screen_locked", currentState())
     }
 
     @objc private func screenDidUnlock(_ notification: Notification) {
         lock.lock()
         lockState = .unlocked
         lock.unlock()
+        onChange?("screen_unlocked", currentState())
     }
 
     @objc private func displayDidSleep(_ notification: Notification) {
         lock.lock()
         displayState = .off
         lock.unlock()
+        onChange?("display_sleep", currentState())
     }
 
     @objc private func displayDidWake(_ notification: Notification) {
         lock.lock()
         displayState = .on
         lock.unlock()
+        onChange?("display_wake", currentState())
     }
 }

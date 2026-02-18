@@ -44,8 +44,29 @@ func setupSignalHandlers(server: Server, screenState: ScreenState, cdpPool: CDPC
 
 log("agentviewd starting...")
 
+// Initialize wake client (connects to OpenClaw gateway)
+let wakeClient = WakeClient.fromConfig()
+
 // Initialize components
 let screenState = ScreenState()
+
+// Wire screen state changes to wake events
+screenState.onChange = { event, state in
+    log("Screen event: \(event) — screen=\(state.screen), display=\(state.display)")
+    switch event {
+    case "screen_unlocked":
+        wakeClient.screenUnlocked()
+    case "screen_locked":
+        wakeClient.screenLocked()
+    case "display_wake":
+        log("Display woke up")
+    case "display_sleep":
+        log("Display sleeping")
+    default:
+        break
+    }
+}
+
 screenState.startObserving()
 
 let cdpPool = CDPConnectionPool()
