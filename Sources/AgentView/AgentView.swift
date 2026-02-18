@@ -119,7 +119,7 @@ struct Act: ParsableCommand {
     @Argument(help: "App name (partial match, case-insensitive)")
     var app: String?
 
-    @Argument(help: "Action: click, focus, fill, clear, toggle, select, eval")
+    @Argument(help: "Action: click, focus, fill, clear, toggle, select, eval, script")
     var action: String
 
     @Option(name: .long, help: "Element ref (e.g., e4)")
@@ -152,8 +152,85 @@ struct Act: ParsableCommand {
             throw ExitCode.failure
         }
 
+        // Handle script action separately — uses AppleScript, no ref needed
+        if action.lowercased() == "script" {
+            guard let expression = expr else {
+                fputs("Error: script action requires --expr\n", stderr)
+                throw ExitCode.failure
+            }
+            let appName = runningApp.localizedName ?? "Unknown"
+            let script: String
+            if expression.lowercased().hasPrefix("tell application") {
+                // User provided a full tell block — run as-is
+                script = expression
+            } else {
+                // Wrap in tell application block
+                script = "tell application \"\(appName)\"\n\(expression)\nend tell"
+            }
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-e", script]
+
+            let outPipe = Pipe()
+            let errPipe = Pipe()
+            process.standardOutput = outPipe
+            process.standardError = errPipe
+
+            // Run with a timeout
+            try process.run()
+
+            let deadline = DispatchTime.now() + .seconds(15)
+            let group = DispatchGroup()
+            group.enter()
+            DispatchQueue.global().async {
+                process.waitUntilExit()
+                group.leave()
+            }
+
+            if group.wait(timeout: deadline) == .timedOut {
+                process.terminate()
+                let output: [String: AnyCodable] = [
+                    "success": AnyCodable(false),
+                    "app": AnyCodable(appName),
+                    "pid": AnyCodable(runningApp.processIdentifier),
+                    "action": AnyCodable("script"),
+                    "error": AnyCodable("AppleScript timed out after 15 seconds. The app may not support this operation (e.g., screen is locked)."),
+                ]
+                try JSONOutput.print(output, pretty: pretty)
+                throw ExitCode.failure
+            }
+
+            let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let stdout = String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let stderr_str = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            if process.terminationStatus != 0 {
+                let output: [String: AnyCodable] = [
+                    "success": AnyCodable(false),
+                    "app": AnyCodable(appName),
+                    "pid": AnyCodable(runningApp.processIdentifier),
+                    "action": AnyCodable("script"),
+                    "error": AnyCodable(stderr_str.isEmpty ? "AppleScript failed with exit code \(process.terminationStatus)" : stderr_str),
+                ]
+                try JSONOutput.print(output, pretty: pretty)
+                throw ExitCode.failure
+            }
+
+            let output: [String: AnyCodable] = [
+                "success": AnyCodable(true),
+                "app": AnyCodable(appName),
+                "pid": AnyCodable(runningApp.processIdentifier),
+                "action": AnyCodable("script"),
+                "result": AnyCodable(stdout),
+            ]
+            try JSONOutput.print(output, pretty: pretty)
+            return
+        }
+
         guard let actionType = ActionExecutor.ActionType(rawValue: action.lowercased()) else {
-            fputs("Error: Unknown action '\(action)'. Valid actions: click, focus, fill, clear, toggle, select, eval\n", stderr)
+            fputs("Error: Unknown action '\(action)'. Valid actions: click, focus, fill, clear, toggle, select, eval, script\n", stderr)
             throw ExitCode.failure
         }
 
