@@ -12,11 +12,15 @@ struct WakeClient {
     struct Config: Codable {
         let gatewayUrl: String?
         let gatewayToken: String?
+        let hooksToken: String?
+        let wakeEndpoint: String?
         let wakeEvents: WakeEventConfig?
 
         enum CodingKeys: String, CodingKey {
             case gatewayUrl = "gateway_url"
             case gatewayToken = "gateway_token"
+            case hooksToken = "hooks_token"
+            case wakeEndpoint = "wake_endpoint"
             case wakeEvents = "wake_events"
         }
     }
@@ -35,6 +39,8 @@ struct WakeClient {
         }
     }
 
+    let wakeEndpoint: String
+
     /// Load config from ~/.agentview/config.json
     static func fromConfig() -> WakeClient {
         let configPath = FileManager.default.homeDirectoryForCurrentUser
@@ -43,14 +49,22 @@ struct WakeClient {
         guard FileManager.default.fileExists(atPath: configPath),
               let data = FileManager.default.contents(atPath: configPath),
               let config = try? JSONDecoder().decode(Config.self, from: data),
-              let url = config.gatewayUrl, !url.isEmpty,
-              let token = config.gatewayToken, !token.isEmpty else {
+              let url = config.gatewayUrl, !url.isEmpty else {
             fputs("[wake] No gateway config found at ~/.agentview/config.json — wake disabled\n", stderr)
-            return WakeClient(gatewayUrl: "", gatewayToken: "", enabled: false)
+            return WakeClient(gatewayUrl: "", gatewayToken: "", enabled: false, wakeEndpoint: "/hooks/wake")
         }
 
-        fputs("[wake] Gateway configured: \(url) — wake enabled\n", stderr)
-        return WakeClient(gatewayUrl: url, gatewayToken: token, enabled: true)
+        // Prefer hooks token over gateway token
+        let token = config.hooksToken ?? config.gatewayToken ?? ""
+        let endpoint = config.wakeEndpoint ?? "/hooks/wake"
+
+        guard !token.isEmpty else {
+            fputs("[wake] No token in config — wake disabled\n", stderr)
+            return WakeClient(gatewayUrl: url, gatewayToken: "", enabled: false, wakeEndpoint: endpoint)
+        }
+
+        fputs("[wake] Gateway configured: \(url)\(endpoint) — wake enabled\n", stderr)
+        return WakeClient(gatewayUrl: url, gatewayToken: token, enabled: true, wakeEndpoint: endpoint)
     }
 
     /// Send a wake event to the OpenClaw gateway
@@ -62,7 +76,7 @@ struct WakeClient {
             "mode": mode
         ]
 
-        guard let url = URL(string: "\(gatewayUrl)/api/cron/wake"),
+        guard let url = URL(string: "\(gatewayUrl)\(wakeEndpoint)"),
               let body = try? JSONSerialization.data(withJSONObject: payload) else {
             fputs("[wake] Failed to construct wake request\n", stderr)
             return
