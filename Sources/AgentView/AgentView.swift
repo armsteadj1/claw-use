@@ -9,7 +9,7 @@ struct AgentView: ParsableCommand {
         commandName: "agentview",
         abstract: "Read macOS Accessibility APIs and expose structured UI state to AI agents.",
         version: "0.1.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self]
     )
 }
 
