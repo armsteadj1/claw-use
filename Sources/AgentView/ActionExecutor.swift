@@ -12,6 +12,7 @@ struct ActionExecutor {
         case clear
         case toggle
         case select
+        case eval
     }
 
     func execute(
@@ -46,6 +47,9 @@ struct ActionExecutor {
             result = performToggle(element: element)
         case .select:
             result = performSelect(element: element, optionLabel: value)
+        case .eval:
+            // Handled in Act command directly via CDP — should not reach here
+            result = ActionResultOutput(success: false, error: "eval is handled at command level, not in ActionExecutor", snapshot: nil)
         }
 
         guard result.success else { return result }

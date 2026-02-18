@@ -59,7 +59,7 @@ struct CDPHelper {
         let msg: [String: Any] = [
             "id": 1,
             "method": "Runtime.evaluate",
-            "params": ["expression": expression]
+            "params": ["expression": expression, "awaitPromise": true]
         ]
         let jsonData = try JSONSerialization.data(withJSONObject: msg)
         let jsonString = String(data: jsonData, encoding: .utf8)!

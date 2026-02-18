@@ -119,14 +119,20 @@ struct Act: ParsableCommand {
     @Argument(help: "App name (partial match, case-insensitive)")
     var app: String?
 
-    @Argument(help: "Action: click, focus, fill, clear, toggle, select")
+    @Argument(help: "Action: click, focus, fill, clear, toggle, select, eval")
     var action: String
 
     @Option(name: .long, help: "Element ref (e.g., e4)")
-    var ref: String
+    var ref: String?
 
     @Option(name: .long, help: "Value for fill/select actions")
     var value: String?
+
+    @Option(name: .long, help: "JavaScript expression for eval action")
+    var expr: String?
+
+    @Option(name: .long, help: "CDP port (default: 9222)")
+    var port: Int = 9222
 
     @Option(name: .long, help: "App PID")
     var pid: Int32?
@@ -147,7 +153,42 @@ struct Act: ParsableCommand {
         }
 
         guard let actionType = ActionExecutor.ActionType(rawValue: action.lowercased()) else {
-            fputs("Error: Unknown action '\(action)'. Valid actions: click, focus, fill, clear, toggle, select\n", stderr)
+            fputs("Error: Unknown action '\(action)'. Valid actions: click, focus, fill, clear, toggle, select, eval\n", stderr)
+            throw ExitCode.failure
+        }
+
+        // Handle eval action separately — uses CDP, no ref needed
+        if actionType == .eval {
+            guard let expression = expr else {
+                fputs("Error: eval action requires --expr\n", stderr)
+                throw ExitCode.failure
+            }
+            let cdp = CDPHelper(port: port)
+            do {
+                let pages = try cdp.listPages()
+                guard let page = pages.first, let wsUrl = page.webSocketDebuggerUrl else {
+                    fputs("Error: No CDP pages found. Is the app running with --remote-debugging-port=\(port)?\n", stderr)
+                    throw ExitCode.failure
+                }
+                let evalResult = try cdp.evaluate(pageWsUrl: wsUrl, expression: expression)
+                let output: [String: AnyCodable] = [
+                    "success": AnyCodable(true),
+                    "app": AnyCodable(runningApp.localizedName ?? "Unknown"),
+                    "pid": AnyCodable(runningApp.processIdentifier),
+                    "action": AnyCodable("eval"),
+                    "result": AnyCodable(evalResult ?? "undefined"),
+                ]
+                try JSONOutput.print(output, pretty: pretty)
+            } catch {
+                let output = ActionResultOutput(success: false, error: "CDP eval failed: \(error)", snapshot: nil)
+                try JSONOutput.print(output, pretty: pretty)
+                throw ExitCode.failure
+            }
+            return
+        }
+
+        guard let ref = ref else {
+            fputs("Error: --ref is required for \(action) action\n", stderr)
             throw ExitCode.failure
         }
 

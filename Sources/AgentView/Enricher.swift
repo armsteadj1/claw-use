@@ -144,8 +144,8 @@ struct Pruner {
             if node.title != nil || node.axDescription != nil { return true }
         }
 
-        // Keep groups with titles (section containers)
-        if role == "AXGroup" && node.title != nil { return true }
+        // Keep groups with titles or descriptions (section containers, Electron buttons)
+        if role == "AXGroup" && (node.title != nil || node.axDescription != nil) { return true }
 
         // Keep tab groups, toolbars, web areas
         if ["AXTabGroup", "AXToolbar", "AXWebArea", "AXList", "AXOutline"].contains(role) {
@@ -194,7 +194,10 @@ class RefAssigner {
 
     func shouldAssignRef(_ node: RawAXNode) -> Bool {
         guard let role = node.role else { return false }
-        return Self.interactiveRoles.contains(role)
+        if Self.interactiveRoles.contains(role) { return true }
+        // Electron apps use AXGroup with AXPress as clickable buttons
+        if role == "AXGroup" && node.actions.contains("AXPress") { return true }
+        return false
     }
 }
 
