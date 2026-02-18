@@ -134,6 +134,9 @@ struct Act: ParsableCommand {
     @Option(name: .long, help: "CDP port (default: 9222)")
     var port: Int = 9222
 
+    @Option(name: .long, help: "Timeout in seconds for script action (default: 3)")
+    var timeout: Int = 3
+
     @Option(name: .long, help: "App PID")
     var pid: Int32?
 
@@ -180,7 +183,8 @@ struct Act: ParsableCommand {
             // Run with a timeout
             try process.run()
 
-            let deadline = DispatchTime.now() + .seconds(15)
+            let timeoutSeconds = timeout
+            let deadline = DispatchTime.now() + .seconds(timeoutSeconds)
             let group = DispatchGroup()
             group.enter()
             DispatchQueue.global().async {
@@ -195,7 +199,7 @@ struct Act: ParsableCommand {
                     "app": AnyCodable(appName),
                     "pid": AnyCodable(runningApp.processIdentifier),
                     "action": AnyCodable("script"),
-                    "error": AnyCodable("AppleScript timed out after 15 seconds. The app may not support this operation (e.g., screen is locked)."),
+                    "error": AnyCodable("AppleScript timed out after \(timeoutSeconds)s. The app may not respond while the screen is locked."),
                 ]
                 try JSONOutput.print(output, pretty: pretty)
                 throw ExitCode.failure
