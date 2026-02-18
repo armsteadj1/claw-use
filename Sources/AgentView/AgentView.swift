@@ -8,8 +8,8 @@ struct AgentView: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "agentview",
         abstract: "Read macOS Accessibility APIs and expose structured UI state to AI agents.",
-        version: "0.1.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self]
+        version: "0.2.0",
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self]
     )
 }
 
@@ -175,8 +175,8 @@ struct Act: ParsableCommand {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
             process.arguments = ["-e", script]
 
-            let outPipe = Pipe()
-            let errPipe = Pipe()
+            let outPipe = Foundation.Pipe()
+            let errPipe = Foundation.Pipe()
             process.standardOutput = outPipe
             process.standardError = errPipe
 
@@ -322,14 +322,14 @@ struct Open: ParsableCommand {
         if let urlStr = url { args.append(urlStr) }
         process.arguments = args
 
-        let pipe = Pipe()
-        process.standardError = pipe
+        let errPipe = Foundation.Pipe()
+        process.standardError = errPipe
 
         try process.run()
         process.waitUntilExit()
 
         if process.terminationStatus != 0 {
-            let errorData = pipe.fileHandleForReading.readDataToEndOfFile()
+            let errorData = errPipe.fileHandleForReading.readDataToEndOfFile()
             let errorStr = String(data: errorData, encoding: .utf8) ?? "Unknown error"
             fputs("Error: \(errorStr)", stderr)
             throw ExitCode.failure
@@ -387,5 +387,234 @@ struct Focus: ParsableCommand {
             "pid": AnyCodable(runningApp.processIdentifier),
         ]
         try JSONOutput.print(result, pretty: false)
+    }
+}
+
+// MARK: - pipe
+
+struct Pipe: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Snapshot + fuzzy match + act in one call (~200ms total)"
+    )
+
+    @Argument(help: "App name (partial match, case-insensitive)")
+    var app: String?
+
+    @Argument(help: "Action: click, fill, read, eval, script")
+    var action: String
+
+    @Option(name: .long, help: "Fuzzy match string for element label/role/value")
+    var match: String?
+
+    @Option(name: .long, help: "Value for fill action")
+    var value: String?
+
+    @Option(name: .long, help: "JavaScript expression for eval/script actions")
+    var expr: String?
+
+    @Option(name: .long, help: "CDP port (default: 9222)")
+    var port: Int = 9222
+
+    @Option(name: .long, help: "Timeout in seconds for script action (default: 3)")
+    var timeout: Int = 3
+
+    @Option(name: .long, help: "App PID")
+    var pid: Int32?
+
+    @Flag(name: .long, help: "Include full snapshot in output")
+    var includeSnapshot: Bool = false
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        // eval and script don't need AX or matching — fast path
+        if action.lowercased() == "eval" || action.lowercased() == "script" {
+            // Delegate to Act command
+            var actCmd = Act()
+            actCmd.app = app
+            actCmd.action = action
+            actCmd.expr = expr
+            actCmd.port = port
+            actCmd.timeout = timeout
+            actCmd.pid = pid
+            actCmd.pretty = pretty
+            try actCmd.run()
+            return
+        }
+
+        guard AXBridge.checkAccessibilityPermission() else {
+            fputs("Error: Accessibility permission not granted.\n", stderr)
+            AXBridge.requestPermission()
+            throw ExitCode.failure
+        }
+
+        guard let runningApp = AXBridge.resolveApp(name: app, pid: pid) else {
+            throw ExitCode.failure
+        }
+
+        // Step 1: Snapshot (builds ref map)
+        let enricher = Enricher()
+        let refMap = RefMap()
+        let snapshot = enricher.snapshot(app: runningApp, refMap: refMap)
+
+        // Step 2: Fuzzy match
+        guard let matchStr = match else {
+            fputs("Error: --match is required for pipe \(action)\n", stderr)
+            throw ExitCode.failure
+        }
+
+        let needle = matchStr.lowercased()
+        var bestMatch: (ref: String, score: Int, label: String)?
+
+        // Search through all sections and elements
+        for section in snapshot.content.sections {
+            for element in section.elements {
+                let score = fuzzyScore(needle: needle, element: element, sectionLabel: section.label)
+                if score > 0 {
+                    if bestMatch == nil || score > bestMatch!.score {
+                        bestMatch = (ref: element.ref, score: score, label: element.label ?? element.role)
+                    }
+                }
+            }
+        }
+
+        // Also check inferred actions
+        for inferredAction in snapshot.actions {
+            if let ref = inferredAction.ref {
+                let haystack = "\(inferredAction.name) \(inferredAction.description)".lowercased()
+                if haystack.contains(needle) {
+                    let score = 50
+                    if bestMatch == nil || score > bestMatch!.score {
+                        bestMatch = (ref: ref, score: score, label: inferredAction.name)
+                    }
+                }
+            }
+        }
+
+        guard let matched = bestMatch else {
+            let output: [String: AnyCodable] = [
+                "success": AnyCodable(false),
+                "error": AnyCodable("No element matching '\(matchStr)' found. Available elements: \(snapshot.content.sections.flatMap { $0.elements }.map { "\($0.ref):\($0.label ?? $0.role)" }.joined(separator: ", "))"),
+                "app": AnyCodable(snapshot.app),
+                "snapshot": includeSnapshot ? AnyCodable(encodableToAny(snapshot)) : AnyCodable(nil),
+            ]
+            try JSONOutput.print(output, pretty: pretty)
+            throw ExitCode.failure
+        }
+
+        // Step 3: Act (or read)
+        if action.lowercased() == "read" {
+            // Just return the matched element + snapshot context
+            let matchedElement = snapshot.content.sections
+                .flatMap { $0.elements }
+                .first { $0.ref == matched.ref }
+
+            var output: [String: AnyCodable] = [
+                "success": AnyCodable(true),
+                "app": AnyCodable(snapshot.app),
+                "action": AnyCodable("read"),
+                "matched_ref": AnyCodable(matched.ref),
+                "matched_label": AnyCodable(matched.label),
+                "match_score": AnyCodable(matched.score),
+            ]
+            if let el = matchedElement {
+                output["element"] = AnyCodable([
+                    "ref": AnyCodable(el.ref),
+                    "role": AnyCodable(el.role),
+                    "label": AnyCodable(el.label),
+                    "value": el.value ?? AnyCodable(nil),
+                    "enabled": AnyCodable(el.enabled),
+                    "focused": AnyCodable(el.focused),
+                    "actions": AnyCodable(el.actions.map { AnyCodable($0) }),
+                ] as [String: AnyCodable])
+            }
+            if includeSnapshot {
+                output["snapshot"] = AnyCodable(encodableToAny(snapshot))
+            }
+            try JSONOutput.print(output, pretty: pretty)
+            return
+        }
+
+        // For click, fill, etc. — execute the action
+        guard let actionType = ActionExecutor.ActionType(rawValue: action.lowercased()) else {
+            fputs("Error: Unknown action '\(action)'. Valid: click, fill, read, eval, script\n", stderr)
+            throw ExitCode.failure
+        }
+
+        let executor = ActionExecutor(refMap: refMap)
+        let result = executor.execute(
+            action: actionType,
+            ref: matched.ref,
+            value: value,
+            on: runningApp,
+            enricher: enricher
+        )
+
+        // Wrap result with match info
+        var output: [String: AnyCodable] = [
+            "success": AnyCodable(result.success),
+            "app": AnyCodable(snapshot.app),
+            "action": AnyCodable(action),
+            "matched_ref": AnyCodable(matched.ref),
+            "matched_label": AnyCodable(matched.label),
+            "match_score": AnyCodable(matched.score),
+        ]
+        if let err = result.error {
+            output["error"] = AnyCodable(err)
+        }
+        if includeSnapshot {
+            output["snapshot"] = AnyCodable(encodableToAny(snapshot))
+        }
+        try JSONOutput.print(output, pretty: pretty)
+
+        if !result.success {
+            throw ExitCode.failure
+        }
+    }
+
+    /// Fuzzy scoring: higher = better match
+    private func fuzzyScore(needle: String, element: Element, sectionLabel: String?) -> Int {
+        var score = 0
+        let label = (element.label ?? "").lowercased()
+        let role = element.role.lowercased()
+        let valStr = stringValue(element.value).lowercased()
+        let secLabel = (sectionLabel ?? "").lowercased()
+
+        // Exact label match
+        if label == needle { score += 100 }
+        // Label contains needle
+        else if label.contains(needle) { score += 80 }
+        // Needle contains label (partial)
+        else if !label.isEmpty && needle.contains(label) { score += 40 }
+
+        // Role match
+        if role.contains(needle) { score += 30 }
+
+        // Value match
+        if valStr.contains(needle) { score += 20 }
+
+        // Section label match
+        if secLabel.contains(needle) { score += 10 }
+
+        // Boost for actionable elements
+        if !element.actions.isEmpty && score > 0 { score += 5 }
+
+        return score
+    }
+
+    private func stringValue(_ v: AnyCodable?) -> String {
+        guard let val = v?.value else { return "" }
+        if let s = val as? String { return s }
+        return "\(val)"
+    }
+
+    /// Convert Encodable to Any for AnyCodable wrapping
+    private func encodableToAny<T: Encodable>(_ value: T) -> Any {
+        guard let data = try? JSONOutput.encoder.encode(value),
+              let dict = try? JSONSerialization.jsonObject(with: data) else {
+            return "encoding_error"
+        }
+        return dict
     }
 }
