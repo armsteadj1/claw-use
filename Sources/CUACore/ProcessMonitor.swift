@@ -1,5 +1,17 @@
 import Foundation
 
+// Wrapper to disambiguate Darwin.kevent() syscall from kevent struct in Swift 6
+private func kevent_call(
+    _ kq: Int32,
+    _ changelist: UnsafePointer<kevent>?,
+    _ nchanges: Int32,
+    _ eventlist: UnsafeMutablePointer<kevent>?,
+    _ nevents: Int32,
+    _ timeout: UnsafePointer<timespec>?
+) -> Int32 {
+    Darwin.kevent(kq, changelist, nchanges, eventlist, nevents, timeout)
+}
+
 // MARK: - Process Event Types
 
 /// Event types emitted by the process monitor
@@ -323,7 +335,7 @@ public final class ProcessWatcher {
         )
 
         // Register while process is alive
-        let reg = Darwin.kevent(kq, &change, 1, nil, 0, nil)
+        let reg = kevent_call(kq, &change, 1, nil, 0, nil)
         if reg == -1 {
             close(kq)
             self.kqueueFd = -1
@@ -335,7 +347,7 @@ public final class ProcessWatcher {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var event = kevent(ident: 0, filter: 0, flags: 0, fflags: 0, data: 0, udata: nil)
             // Block indefinitely until process exits
-            let n = Darwin.kevent(kq, nil, 0, &event, 1, nil)
+            let n = kevent_call(kq, nil, 0, &event, 1, nil)
             guard let self = self else {
                 close(kq)
                 return
