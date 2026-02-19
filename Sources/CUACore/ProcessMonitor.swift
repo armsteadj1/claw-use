@@ -130,12 +130,15 @@ public final class ProcessWatcher {
     private let eventBus: EventBus
     private var fileHandle: FileHandle?
     private var dispatchSource: DispatchSourceFileSystemObject?
+    private var procExitSource: DispatchSourceProcess?
     private var pollTimer: DispatchSourceTimer?
     private var idleTimer: DispatchSourceTimer?
     private var lastActivityTime: Date
     private var stopped = false
     private let lock = NSLock()
     private var lineBuffer = ""
+    /// Exit code captured by kqueue (NOTE_EXITSTATUS), nil if not yet available
+    private var kqueueExitCode: Int32?
 
     public init(pid: Int32, logPath: String?, idleTimeout: TimeInterval = 300, eventBus: EventBus) {
         self.pid = pid
@@ -147,6 +150,10 @@ public final class ProcessWatcher {
 
     /// Start watching the process
     public func start() {
+        // Use kqueue (EVFILT_PROC + NOTE_EXITSTATUS) for reliable exit code
+        // detection on macOS — works for ANY process, not just children.
+        startKqueueExitWatch()
+
         if let logPath = logPath {
             startLogTailing(path: logPath)
         } else {
@@ -162,6 +169,8 @@ public final class ProcessWatcher {
         stopped = true
         lock.unlock()
 
+        procExitSource?.cancel()
+        procExitSource = nil
         dispatchSource?.cancel()
         dispatchSource = nil
         pollTimer?.cancel()
@@ -290,6 +299,80 @@ public final class ProcessWatcher {
         }
     }
 
+    // MARK: - kqueue Exit Watch (reliable exit code for any process)
+
+    /// Use macOS kqueue EVFILT_PROC with NOTE_EXIT | NOTE_EXITSTATUS to get
+    /// the real exit status of any process — not just children.
+    /// This replaces waitpid() which only works for child processes.
+    private func startKqueueExitWatch() {
+        let source = DispatchSource.makeProcessSource(
+            identifier: pid,
+            eventMask: .exit,
+            queue: DispatchQueue.global(qos: .utility)
+        )
+
+        source.setEventHandler { [weak self] in
+            guard let self = self, self.isActive else { return }
+            // DispatchSource.makeProcessSource uses NOTE_EXIT under the hood.
+            // To get the actual exit status we need NOTE_EXITSTATUS which
+            // DispatchSource doesn't expose directly. Use the kqueue fd.
+            let exitCode = self.readKqueueExitStatus() ?? self.waitForExitCode()
+
+            self.lock.lock()
+            self.kqueueExitCode = exitCode
+            self.lock.unlock()
+
+            let event = CUAEvent(
+                type: ProcessEventType.exit.rawValue,
+                pid: self.pid,
+                details: ["exit_code": AnyCodable(exitCode)]
+            )
+            self.eventBus.publish(event)
+            self.stop()
+        }
+
+        source.setCancelHandler { /* nothing */ }
+        self.procExitSource = source
+        source.resume()
+    }
+
+    /// Use raw kqueue to read exit status with NOTE_EXITSTATUS.
+    /// Returns the exit code (0-255) or nil if unable to determine.
+    private func readKqueueExitStatus() -> Int32? {
+        let kq = kqueue()
+        guard kq >= 0 else { return nil }
+        defer { close(kq) }
+
+        var change = kevent(
+            ident: UInt(pid),
+            filter: Int16(EVFILT_PROC),
+            flags: UInt16(EV_ADD | EV_ONESHOT),
+            fflags: UInt32(NOTE_EXIT | NOTE_EXITSTATUS),
+            data: 0,
+            udata: nil
+        )
+
+        // Register — if the process is already dead this may fail, that's OK
+        let reg = kevent(kq, &change, 1, nil, 0, nil)
+        if reg == -1 { return nil }
+
+        // Poll immediately (non-blocking) — process may already be dead
+        var timeout = timespec(tv_sec: 0, tv_nsec: 100_000_000) // 100ms
+        var event = kevent()
+        let n = kevent(kq, nil, 0, &event, 1, &timeout)
+        guard n > 0 else { return nil }
+
+        let status = Int32(event.data)
+        // Parse wait-style status
+        if (status & 0x7f) == 0 {
+            // Normal exit: WEXITSTATUS
+            return (status >> 8) & 0xff
+        } else {
+            // Killed by signal: return negative signal number (convention)
+            return -(status & 0x7f)
+        }
+    }
+
     // MARK: - Process Polling (no log file mode)
 
     private func startProcessPolling() {
@@ -306,7 +389,17 @@ public final class ProcessWatcher {
     private func checkProcessAlive() {
         guard isActive else { return }
         if kill(pid, 0) != 0 {
-            // Process has exited
+            // Process has exited — check if kqueue already handled it
+            lock.lock()
+            let alreadyHandled = kqueueExitCode != nil
+            lock.unlock()
+
+            if alreadyHandled {
+                // kqueue exit handler already fired — don't double-publish
+                return
+            }
+
+            // Fallback: kqueue didn't fire (race condition or unsupported)
             let exitCode = waitForExitCode()
             let event = CUAEvent(
                 type: ProcessEventType.exit.rawValue,
@@ -319,17 +412,28 @@ public final class ProcessWatcher {
     }
 
     private func waitForExitCode() -> Int32 {
+        // First check if kqueue captured the exit code
+        lock.lock()
+        if let kqCode = kqueueExitCode {
+            lock.unlock()
+            return kqCode
+        }
+        lock.unlock()
+
+        // Try kqueue one more time (process just died)
+        if let kqCode = readKqueueExitStatus() {
+            return kqCode
+        }
+
+        // Last resort: waitpid (only works for child processes)
         var status: Int32 = 0
-        // Try to get exit status (may not work if not a child process)
         let result = waitpid(pid, &status, WNOHANG)
         if result > 0 {
-            // WIFEXITED: (_WSTATUS(x) == 0) where _WSTATUS(x) = (x & 0177)
             if (status & 0x7f) == 0 {
-                // WEXITSTATUS: (x >> 8) & 0xff
                 return (status >> 8) & 0xff
             }
         }
-        return -1 // Unknown exit code
+        return -1 // Truly unknown exit code
     }
 
     // MARK: - Idle Detection
