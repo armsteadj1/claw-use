@@ -51,6 +51,9 @@ public enum AgentViewEventType: String, CaseIterable {
     case processError = "process.error"
     case processIdle = "process.idle"
     case processExit = "process.exit"
+
+    // Parliament
+    case parliamentStateChange = "parliament.state_change"
 }
 
 // MARK: - Subscriber
@@ -79,11 +82,12 @@ public struct EventSubscription {
                 return false
             }
         }
-        // Type filter
+        // Type filter (supports glob patterns like "process.*")
         if let typeFilters = typeFilters, !typeFilters.isEmpty {
-            if !typeFilters.contains(event.type) {
-                return false
+            let matched = typeFilters.contains { filter in
+                EventBus.typeFilterMatches(filter: filter, eventType: event.type)
             }
+            if !matched { return false }
         }
         return true
     }
@@ -183,13 +187,36 @@ public final class EventBus {
             let filter = appFilter.lowercased()
             events = events.filter { ($0.app ?? "").lowercased().contains(filter) }
         }
-        if let typeFilters = typeFilters, !typeFilters.isEmpty {
-            events = events.filter { typeFilters.contains($0.type) }
+        if let predicate = EventBus.typeFilterPredicate(from: typeFilters) {
+            events = events.filter { predicate($0.type) }
         }
         if let limit = limit {
             events = Array(events.suffix(limit))
         }
         return events
+    }
+
+    /// Check if a glob-style filter matches an event type.
+    /// Supports: exact match, "*" (all), and "prefix.*" (e.g. "process.*" matches "process.error").
+    public static func typeFilterMatches(filter: String, eventType: String) -> Bool {
+        if filter == "*" { return true }
+        if filter == eventType { return true }
+        if filter.hasSuffix(".*") {
+            let prefix = String(filter.dropLast(2))
+            return eventType.hasPrefix(prefix + ".")
+        }
+        return false
+    }
+
+    /// Expand a set of type filters (which may contain globs) into a predicate.
+    /// Returns nil if filters are nil or empty (meaning "match all").
+    public static func typeFilterPredicate(from filters: Set<String>?) -> ((String) -> Bool)? {
+        guard let filters = filters, !filters.isEmpty else { return nil }
+        // If any filter is "*", match everything
+        if filters.contains("*") { return nil }
+        return { eventType in
+            filters.contains { filter in typeFilterMatches(filter: filter, eventType: eventType) }
+        }
     }
 
     /// Current subscriber count

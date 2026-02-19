@@ -434,12 +434,13 @@ final class Router {
     private func handleSubscribe(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
         let appFilter = params["app"]?.value as? String
         let typesStr = params["types"]?.value as? String
+        let filterStr = params["filter"]?.value as? String
 
         // Return subscription parameters for Server to wire up streaming
         let result: [String: AnyCodable] = [
             "streaming": AnyCodable(true),
             "app_filter": AnyCodable(appFilter),
-            "type_filters": AnyCodable(typesStr),
+            "type_filters": AnyCodable(typesStr ?? filterStr),
         ]
         return JSONRPCResponse(result: AnyCodable(result), id: id)
     }
@@ -449,8 +450,10 @@ final class Router {
     private func handleEvents(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
         let appFilter = params["app"]?.value as? String
         let typesStr = params["types"]?.value as? String
+        let filterStr = params["filter"]?.value as? String
         let limit = params["limit"]?.value as? Int
-        let typeFilters: Set<String>? = typesStr.map { Set($0.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }) }
+        let rawFilter = typesStr ?? filterStr
+        let typeFilters: Set<String>? = rawFilter.map { Set($0.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }) }
 
         let events = eventBus.getRecentEvents(appFilter: appFilter, typeFilters: typeFilters, limit: limit)
 

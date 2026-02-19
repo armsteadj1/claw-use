@@ -117,9 +117,16 @@ final class Server {
     private func setupStreaming(request: JSONRPCRequest, on connection: NWConnection) {
         let params = request.params ?? [:]
         let appFilter = params["app"]?.value as? String
+        // Support both "types" (comma-separated exact types) and "filter" (glob pattern like "process.*")
         let typesStr = params["types"]?.value as? String
-        let typeFilters: Set<String>? = typesStr.map {
-            Set($0.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) })
+        let filterStr = params["filter"]?.value as? String
+        let typeFilters: Set<String>?
+        if let filterStr = filterStr {
+            typeFilters = Set(filterStr.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) })
+        } else if let typesStr = typesStr {
+            typeFilters = Set(typesStr.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) })
+        } else {
+            typeFilters = nil
         }
 
         // Subscribe to events and stream them to the connection
@@ -136,7 +143,7 @@ final class Server {
             "subscribed": AnyCodable(true),
             "subscription_id": AnyCodable(subId),
             "app_filter": AnyCodable(appFilter),
-            "type_filters": AnyCodable(typesStr),
+            "type_filters": AnyCodable(typesStr ?? filterStr),
         ]
         sendResponse(JSONRPCResponse(result: AnyCodable(ack), id: request.id), on: connection)
 

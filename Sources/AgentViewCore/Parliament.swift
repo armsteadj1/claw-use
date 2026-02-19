@@ -260,7 +260,20 @@ public final class Parliament {
         let changed = owlet.state != oldState
         lock.unlock()
 
-        if changed { save() }
+        if changed {
+            save()
+            // Emit parliament.state_change event
+            eventBus?.publish(AgentViewEvent(
+                type: AgentViewEventType.parliamentStateChange.rawValue,
+                pid: pid,
+                details: [
+                    "label": AnyCodable(owlet.label),
+                    "old_state": AnyCodable(oldState.rawValue),
+                    "new_state": AnyCodable(owlet.state.rawValue),
+                    "last_detail": AnyCodable(owlet.lastDetail),
+                ]
+            ))
+        }
     }
 
     private func isTestCommand(_ str: String) -> Bool {

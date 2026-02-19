@@ -2594,3 +2594,337 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     #expect(decoded.owlets[100]?.label == "Issue #42")
     #expect(decoded.owlets[200]?.label == "Issue #43")
 }
+
+// MARK: - EventBus Glob Filter Tests
+
+@Test func typeFilterMatchesExact() {
+    #expect(EventBus.typeFilterMatches(filter: "process.error", eventType: "process.error") == true)
+    #expect(EventBus.typeFilterMatches(filter: "process.error", eventType: "process.exit") == false)
+}
+
+@Test func typeFilterMatchesWildcardAll() {
+    #expect(EventBus.typeFilterMatches(filter: "*", eventType: "process.error") == true)
+    #expect(EventBus.typeFilterMatches(filter: "*", eventType: "app.launched") == true)
+    #expect(EventBus.typeFilterMatches(filter: "*", eventType: "parliament.state_change") == true)
+}
+
+@Test func typeFilterMatchesGlobPrefix() {
+    #expect(EventBus.typeFilterMatches(filter: "process.*", eventType: "process.error") == true)
+    #expect(EventBus.typeFilterMatches(filter: "process.*", eventType: "process.exit") == true)
+    #expect(EventBus.typeFilterMatches(filter: "process.*", eventType: "process.idle") == true)
+    #expect(EventBus.typeFilterMatches(filter: "process.*", eventType: "app.launched") == false)
+    #expect(EventBus.typeFilterMatches(filter: "parliament.*", eventType: "parliament.state_change") == true)
+    #expect(EventBus.typeFilterMatches(filter: "parliament.*", eventType: "process.error") == false)
+}
+
+@Test func typeFilterMatchesGlobNoFalsePrefix() {
+    // "process.*" should NOT match "process" (no dot)
+    #expect(EventBus.typeFilterMatches(filter: "process.*", eventType: "process") == false)
+}
+
+@Test func typeFilterPredicateNil() {
+    // nil filters means match all
+    let predicate = EventBus.typeFilterPredicate(from: nil)
+    #expect(predicate == nil)
+}
+
+@Test func typeFilterPredicateEmpty() {
+    let predicate = EventBus.typeFilterPredicate(from: Set<String>())
+    #expect(predicate == nil)
+}
+
+@Test func typeFilterPredicateWildcard() {
+    let predicate = EventBus.typeFilterPredicate(from: Set(["*"]))
+    #expect(predicate == nil) // * means match all, so nil predicate
+}
+
+@Test func typeFilterPredicateGlob() {
+    let predicate = EventBus.typeFilterPredicate(from: Set(["process.*"]))
+    #expect(predicate != nil)
+    #expect(predicate!("process.error") == true)
+    #expect(predicate!("process.exit") == true)
+    #expect(predicate!("app.launched") == false)
+}
+
+@Test func typeFilterPredicateMultipleGlobs() {
+    let predicate = EventBus.typeFilterPredicate(from: Set(["process.*", "parliament.*"]))
+    #expect(predicate != nil)
+    #expect(predicate!("process.error") == true)
+    #expect(predicate!("parliament.state_change") == true)
+    #expect(predicate!("app.launched") == false)
+}
+
+@Test func eventBusSubscribeWithGlobFilter() {
+    let bus = EventBus()
+    var received: [AgentViewEvent] = []
+
+    // Subscribe with a glob filter for process.*
+    let subId = bus.subscribe(typeFilters: Set(["process.*"])) { event in
+        received.append(event)
+    }
+
+    // Publish matching event
+    bus.publish(AgentViewEvent(type: "process.error", pid: 100, details: ["error": AnyCodable("test")]))
+    // Publish non-matching event
+    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
+    // Publish another matching event
+    bus.publish(AgentViewEvent(type: "process.exit", pid: 100))
+
+    #expect(received.count == 2)
+    #expect(received[0].type == "process.error")
+    #expect(received[1].type == "process.exit")
+
+    bus.unsubscribe(subId)
+}
+
+@Test func eventBusGetRecentEventsWithGlobFilter() {
+    let bus = EventBus()
+    bus.publish(AgentViewEvent(type: "process.error", pid: 100))
+    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
+    bus.publish(AgentViewEvent(type: "process.exit", pid: 100))
+    bus.publish(AgentViewEvent(type: "parliament.state_change", pid: 200))
+
+    let processEvents = bus.getRecentEvents(typeFilters: Set(["process.*"]))
+    #expect(processEvents.count == 2)
+
+    let allEvents = bus.getRecentEvents(typeFilters: Set(["*"]))
+    #expect(allEvents.count == 4)
+
+    let parliamentEvents = bus.getRecentEvents(typeFilters: Set(["parliament.*"]))
+    #expect(parliamentEvents.count == 1)
+    #expect(parliamentEvents[0].type == "parliament.state_change")
+}
+
+@Test func eventBusMultipleSubscribersReceiveEvents() {
+    let bus = EventBus()
+    var received1: [AgentViewEvent] = []
+    var received2: [AgentViewEvent] = []
+
+    let sub1 = bus.subscribe(typeFilters: Set(["process.*"])) { event in
+        received1.append(event)
+    }
+    let sub2 = bus.subscribe(typeFilters: Set(["process.error"])) { event in
+        received2.append(event)
+    }
+
+    bus.publish(AgentViewEvent(type: "process.error", pid: 100))
+    bus.publish(AgentViewEvent(type: "process.exit", pid: 100))
+
+    #expect(received1.count == 2) // glob matches both
+    #expect(received2.count == 1) // exact matches only error
+
+    bus.unsubscribe(sub1)
+    bus.unsubscribe(sub2)
+}
+
+// MARK: - Parliament State Change Event Tests
+
+@Test func parliamentEmitsStateChangeEvent() {
+    let bus = EventBus()
+    let tmpDir = NSTemporaryDirectory() + "agentview-test-\(UUID().uuidString)"
+    let filePath = tmpDir + "/parliament.json"
+    let parliament = Parliament(filePath: filePath)
+    parliament.startListening(eventBus: bus)
+
+    var stateChanges: [AgentViewEvent] = []
+    let subId = bus.subscribe(typeFilters: Set(["parliament.state_change"])) { event in
+        stateChanges.append(event)
+    }
+
+    parliament.add(pid: 99999, label: "Test owlet")
+
+    // Simulate an error event which should trigger state change
+    bus.publish(AgentViewEvent(type: "process.error", pid: 99999, details: ["error": AnyCodable("build failed")]))
+
+    #expect(stateChanges.count == 1)
+    #expect(stateChanges[0].type == "parliament.state_change")
+    #expect(stateChanges[0].pid == 99999)
+    let details = stateChanges[0].details
+    #expect(details?["old_state"]?.value as? String == "STARTING")
+    #expect(details?["new_state"]?.value as? String == "ERROR")
+
+    bus.unsubscribe(subId)
+    parliament.stopListening()
+    try? FileManager.default.removeItem(atPath: tmpDir)
+}
+
+@Test func parliamentStateChangeEventType() {
+    #expect(AgentViewEventType.parliamentStateChange.rawValue == "parliament.state_change")
+}
+
+// MARK: - AgentViewConfig Tests
+
+@Test func agentViewConfigDefaults() {
+    let config = AgentViewConfig()
+    let resolved = config.resolvedEventFile
+    #expect(resolved.enabled == false)
+    #expect(resolved.sessionKey == "main")
+    #expect(resolved.priority.contains("process.error"))
+    #expect(resolved.priority.contains("process.exit"))
+    #expect(resolved.priority.contains("process.idle"))
+    #expect(resolved.priority.contains("parliament.state_change"))
+}
+
+@Test func agentViewConfigResolvedEnabled() {
+    let eventFileConfig = EventFileConfig(enabled: true, path: "/tmp/test-event.json", priority: ["process.error"], sessionKey: "test")
+    let config = AgentViewConfig(eventFile: eventFileConfig)
+    let resolved = config.resolvedEventFile
+    #expect(resolved.enabled == true)
+    #expect(resolved.path == "/tmp/test-event.json")
+    #expect(resolved.priority == Set(["process.error"]))
+    #expect(resolved.sessionKey == "test")
+}
+
+@Test func agentViewConfigLoadMissingFile() {
+    let config = AgentViewConfig.load(from: "/nonexistent/config.json")
+    #expect(config.eventFile == nil)
+    #expect(config.gatewayUrl == nil)
+}
+
+@Test func agentViewConfigCodableRoundTrip() throws {
+    let eventFileConfig = EventFileConfig(enabled: true, path: "~/.agentview/pending-event.json",
+                                          priority: ["process.error", "process.exit"], sessionKey: "main")
+    let config = AgentViewConfig(gatewayUrl: "https://example.com", eventFile: eventFileConfig)
+
+    let data = try JSONEncoder().encode(config)
+    let decoded = try JSONDecoder().decode(AgentViewConfig.self, from: data)
+
+    #expect(decoded.gatewayUrl == "https://example.com")
+    #expect(decoded.eventFile?.enabled == true)
+    #expect(decoded.eventFile?.path == "~/.agentview/pending-event.json")
+    #expect(decoded.eventFile?.priority?.count == 2)
+    #expect(decoded.eventFile?.sessionKey == "main")
+}
+
+@Test func agentViewConfigDefaultPriorityEvents() {
+    let defaults = AgentViewConfig.defaultPriorityEvents
+    #expect(defaults.contains("process.error"))
+    #expect(defaults.contains("process.exit"))
+    #expect(defaults.contains("process.idle"))
+    #expect(defaults.contains("parliament.state_change"))
+}
+
+// MARK: - EventFileWriter Tests
+
+@Test func eventFileWriterDisabledDoesNotWrite() {
+    let config = ResolvedEventFileConfig(enabled: false, path: "/tmp/should-not-exist.json", priority: Set(["process.error"]), sessionKey: "main")
+    let writer = EventFileWriter(config: config)
+    let bus = EventBus()
+    writer.start(eventBus: bus)
+
+    bus.publish(AgentViewEvent(type: "process.error", pid: 100))
+
+    #expect(FileManager.default.fileExists(atPath: "/tmp/should-not-exist.json") == false)
+    #expect(writer.isActive == false)
+    writer.stop()
+}
+
+@Test func eventFileWriterWritesHighPriorityEvent() throws {
+    let tmpPath = NSTemporaryDirectory() + "agentview-test-event-\(UUID().uuidString).json"
+    let config = ResolvedEventFileConfig(enabled: true, path: tmpPath, priority: Set(["process.error", "process.exit"]), sessionKey: "main")
+    let writer = EventFileWriter(config: config)
+    let bus = EventBus()
+    writer.start(eventBus: bus)
+
+    #expect(writer.isActive == true)
+
+    // Publish a high-priority event
+    bus.publish(AgentViewEvent(type: "process.error", pid: 12345, details: ["error": AnyCodable("build failed")]))
+
+    // Read and verify the file
+    let data = try Data(contentsOf: URL(fileURLWithPath: tmpPath))
+    let payload = try JSONDecoder().decode(EventFilePayload.self, from: data)
+
+    #expect(payload.type == "agentview.process.error")
+    #expect(payload.deliver.sessionKey == "main")
+    #expect(payload.data["pid"]?.value as? Int == 12345)
+    #expect(payload.data["error"]?.value as? String == "build failed")
+    #expect(!payload.timestamp.isEmpty)
+
+    writer.stop()
+    try? FileManager.default.removeItem(atPath: tmpPath)
+}
+
+@Test func eventFileWriterIgnoresLowPriorityEvent() {
+    let tmpPath = NSTemporaryDirectory() + "agentview-test-event-\(UUID().uuidString).json"
+    let config = ResolvedEventFileConfig(enabled: true, path: tmpPath, priority: Set(["process.error"]), sessionKey: "main")
+    let writer = EventFileWriter(config: config)
+    let bus = EventBus()
+    writer.start(eventBus: bus)
+
+    // Publish a non-priority event
+    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
+
+    #expect(FileManager.default.fileExists(atPath: tmpPath) == false)
+
+    writer.stop()
+    try? FileManager.default.removeItem(atPath: tmpPath)
+}
+
+@Test func eventFileWriterOverwritesOnNewEvent() throws {
+    let tmpPath = NSTemporaryDirectory() + "agentview-test-event-\(UUID().uuidString).json"
+    let config = ResolvedEventFileConfig(enabled: true, path: tmpPath, priority: Set(["process.error", "process.exit"]), sessionKey: "main")
+    let writer = EventFileWriter(config: config)
+    let bus = EventBus()
+    writer.start(eventBus: bus)
+
+    // First event
+    bus.publish(AgentViewEvent(type: "process.error", pid: 100, details: ["error": AnyCodable("first error")]))
+
+    // Second event should overwrite
+    bus.publish(AgentViewEvent(type: "process.exit", pid: 200, details: ["exit_code": AnyCodable(1)]))
+
+    let data = try Data(contentsOf: URL(fileURLWithPath: tmpPath))
+    let payload = try JSONDecoder().decode(EventFilePayload.self, from: data)
+
+    // Should contain the latest event
+    #expect(payload.type == "agentview.process.exit")
+    #expect(payload.data["pid"]?.value as? Int == 200)
+
+    writer.stop()
+    try? FileManager.default.removeItem(atPath: tmpPath)
+}
+
+@Test func eventFilePayloadEncoding() throws {
+    let payload = EventFilePayload(
+        type: "agentview.process.error",
+        timestamp: "2026-02-18T19:30:00Z",
+        data: [
+            "pid": AnyCodable(12345),
+            "label": AnyCodable("Issue #42: Add login"),
+            "error": AnyCodable("cargo build failed"),
+            "state": AnyCodable("ERROR"),
+        ],
+        deliver: EventFilePayload.DeliverInfo(sessionKey: "main")
+    )
+
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(payload)
+    let json = String(data: data, encoding: .utf8)!
+
+    #expect(json.contains("agentview.process.error"))
+    #expect(json.contains("sessionKey"))
+    #expect(json.contains("main"))
+    #expect(json.contains("2026-02-18T19:30:00Z"))
+}
+
+@Test func eventFilePayloadCodableRoundTrip() throws {
+    let payload = EventFilePayload(
+        type: "agentview.parliament.state_change",
+        timestamp: "2026-02-18T20:00:00Z",
+        data: [
+            "pid": AnyCodable(99999),
+            "old_state": AnyCodable("BUILDING"),
+            "new_state": AnyCodable("ERROR"),
+        ],
+        deliver: EventFilePayload.DeliverInfo(sessionKey: "main")
+    )
+
+    let data = try JSONEncoder().encode(payload)
+    let decoded = try JSONDecoder().decode(EventFilePayload.self, from: data)
+
+    #expect(decoded.type == "agentview.parliament.state_change")
+    #expect(decoded.deliver.sessionKey == "main")
+    #expect(decoded.data["pid"]?.value as? Int == 99999)
+}

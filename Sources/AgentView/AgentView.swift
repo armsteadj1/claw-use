@@ -10,7 +10,7 @@ struct AgentView: ParsableCommand {
         commandName: "agentview",
         abstract: "Read macOS Accessibility APIs and expose structured UI state to AI agents.",
         version: "0.3.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self, ProcessCmd.self, ParliamentCmd.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self, ProcessCmd.self, ParliamentCmd.self, EventsCmd.self]
     )
 }
 
@@ -1486,5 +1486,59 @@ struct ParliamentStatus: ParsableCommand {
         }
 
         print(Parliament.formatStatus(owlets: owlets))
+    }
+}
+
+// MARK: - events
+
+struct EventsCmd: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "events",
+        abstract: "Event streaming and querying",
+        subcommands: [EventsSubscribe.self, EventsList.self]
+    )
+}
+
+struct EventsSubscribe: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "subscribe", abstract: "Subscribe to a filtered event stream via UDS (NDJSON)")
+
+    @Option(name: .long, help: "Filter pattern (glob-style, e.g. \"process.*\", \"parliament.*\", \"*\" for all)")
+    var filter: String?
+
+    @Option(name: .long, help: "Filter by app name (partial match)")
+    var app: String?
+
+    func run() throws {
+        var params: [String: AnyCodable] = [:]
+        if let filter = filter { params["filter"] = AnyCodable(filter) }
+        if let app = app { params["app"] = AnyCodable(app) }
+
+        try DaemonClient.stream(params: params)
+    }
+}
+
+struct EventsList: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "list", abstract: "Get recent events (optionally filtered)")
+
+    @Option(name: .long, help: "Filter pattern (glob-style, e.g. \"process.*\")")
+    var filter: String?
+
+    @Option(name: .long, help: "Filter by app name")
+    var app: String?
+
+    @Option(name: .long, help: "Max events to return")
+    var limit: Int?
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        var params: [String: AnyCodable] = [:]
+        if let filter = filter { params["filter"] = AnyCodable(filter) }
+        if let app = app { params["app"] = AnyCodable(app) }
+        if let limit = limit { params["limit"] = AnyCodable(limit) }
+
+        let response = try callDaemon(method: "events", params: params)
+        try printResponse(response, pretty: pretty)
     }
 }
