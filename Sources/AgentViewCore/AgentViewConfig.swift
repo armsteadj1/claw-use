@@ -22,6 +22,27 @@ public struct EventFileConfig: Codable {
     }
 }
 
+/// Process group reporter configuration section
+public struct ProcessGroupConfig: Codable {
+    public let reporter: ReporterConfig?
+
+    public init(reporter: ReporterConfig? = nil) {
+        self.reporter = reporter
+    }
+
+    public struct ReporterConfig: Codable {
+        public let defaultOutput: String?
+
+        public init(defaultOutput: String? = nil) {
+            self.defaultOutput = defaultOutput
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case defaultOutput = "default_output"
+        }
+    }
+}
+
 /// Full AgentView configuration loaded from ~/.agentview/config.json
 public struct AgentViewConfig: Codable {
     public let gatewayUrl: String?
@@ -29,14 +50,17 @@ public struct AgentViewConfig: Codable {
     public let hooksToken: String?
     public let wakeEndpoint: String?
     public let eventFile: EventFileConfig?
+    public let processGroup: ProcessGroupConfig?
 
     public init(gatewayUrl: String? = nil, gatewayToken: String? = nil, hooksToken: String? = nil,
-                wakeEndpoint: String? = nil, eventFile: EventFileConfig? = nil) {
+                wakeEndpoint: String? = nil, eventFile: EventFileConfig? = nil,
+                processGroup: ProcessGroupConfig? = nil) {
         self.gatewayUrl = gatewayUrl
         self.gatewayToken = gatewayToken
         self.hooksToken = hooksToken
         self.wakeEndpoint = wakeEndpoint
         self.eventFile = eventFile
+        self.processGroup = processGroup
     }
 
     enum CodingKeys: String, CodingKey {
@@ -45,6 +69,7 @@ public struct AgentViewConfig: Codable {
         case hooksToken = "hooks_token"
         case wakeEndpoint = "wake_endpoint"
         case eventFile = "eventFile"
+        case processGroup = "process_group"
     }
 
     /// Default high-priority event types for the event file

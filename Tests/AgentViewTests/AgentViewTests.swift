@@ -3000,3 +3000,248 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     #expect(decoded.content.sections.isEmpty)
     #expect(decoded.app == "TestApp")
 }
+
+// MARK: - ProcessGroupReporter Tests
+
+@Test func milestoneEventFromStarting() {
+    let m = MilestoneEvent.from(oldState: "STARTING", newState: "BUILDING", exitCode: nil)
+    #expect(m == .building)
+}
+
+@Test func milestoneEventFromBuilding() {
+    let m = MilestoneEvent.from(oldState: "BUILDING", newState: "TESTING", exitCode: nil)
+    #expect(m == .testing)
+}
+
+@Test func milestoneEventFromTestingToDone() {
+    let m = MilestoneEvent.from(oldState: "TESTING", newState: "DONE", exitCode: nil)
+    #expect(m == .testsPassed)
+}
+
+@Test func milestoneEventFromTestingToFailed() {
+    let m = MilestoneEvent.from(oldState: "TESTING", newState: "FAILED", exitCode: nil)
+    #expect(m == .testsFailed)
+}
+
+@Test func milestoneEventFromBuildingToDone() {
+    let m = MilestoneEvent.from(oldState: "BUILDING", newState: "DONE", exitCode: nil)
+    #expect(m == .complete)
+}
+
+@Test func milestoneEventFromBuildingToFailed() {
+    let m = MilestoneEvent.from(oldState: "BUILDING", newState: "FAILED", exitCode: nil)
+    #expect(m == .failed)
+}
+
+@Test func milestoneEventToIdle() {
+    let m = MilestoneEvent.from(oldState: "BUILDING", newState: "IDLE", exitCode: nil)
+    #expect(m == .idle)
+}
+
+@Test func milestoneEventToError() {
+    let m = MilestoneEvent.from(oldState: "BUILDING", newState: "ERROR", exitCode: nil)
+    #expect(m == .error)
+}
+
+@Test func milestoneEventStarted() {
+    let m = MilestoneEvent.from(oldState: "", newState: "STARTING", exitCode: nil)
+    #expect(m == .started)
+}
+
+@Test func milestoneEventUnknownState() {
+    let m = MilestoneEvent.from(oldState: "BUILDING", newState: "UNKNOWN", exitCode: nil)
+    #expect(m == nil)
+}
+
+@Test func milestoneEventRawValues() {
+    #expect(MilestoneEvent.started.rawValue == "group.process.started")
+    #expect(MilestoneEvent.building.rawValue == "group.process.building")
+    #expect(MilestoneEvent.testing.rawValue == "group.process.testing")
+    #expect(MilestoneEvent.testsPassed.rawValue == "group.process.tests_passed")
+    #expect(MilestoneEvent.testsFailed.rawValue == "group.process.tests_failed")
+    #expect(MilestoneEvent.idle.rawValue == "group.process.idle")
+    #expect(MilestoneEvent.error.rawValue == "group.process.error")
+    #expect(MilestoneEvent.complete.rawValue == "group.process.complete")
+    #expect(MilestoneEvent.failed.rawValue == "group.process.failed")
+}
+
+@Test func milestoneRecordEncoding() throws {
+    let record = MilestoneRecord(
+        timestamp: "2026-02-18T20:00:00Z",
+        group: "my-batch",
+        pid: 1234,
+        label: "task 1",
+        event: "group.process.testing",
+        detail: "cargo test running (14 tests)"
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let data = try encoder.encode(record)
+    let json = String(data: data, encoding: .utf8)!
+    #expect(json.contains("\"group\":\"my-batch\""))
+    #expect(json.contains("\"pid\":1234"))
+    #expect(json.contains("\"label\":\"task 1\""))
+    #expect(json.contains("\"event\":\"group.process.testing\""))
+    #expect(json.contains("\"detail\":\"cargo test running (14 tests)\""))
+    #expect(json.contains("\"timestamp\":\"2026-02-18T20:00:00Z\""))
+}
+
+@Test func milestoneRecordCodableRoundTrip() throws {
+    let record = MilestoneRecord(
+        timestamp: "2026-02-18T20:00:00Z",
+        group: "default",
+        pid: 5678,
+        label: "Issue #42",
+        event: "group.process.complete",
+        detail: "exit code 0"
+    )
+    let data = try JSONEncoder().encode(record)
+    let decoded = try JSONDecoder().decode(MilestoneRecord.self, from: data)
+    #expect(decoded.timestamp == record.timestamp)
+    #expect(decoded.group == record.group)
+    #expect(decoded.pid == record.pid)
+    #expect(decoded.label == record.label)
+    #expect(decoded.event == record.event)
+    #expect(decoded.detail == record.detail)
+}
+
+@Test func processGroupReporterEncodeMilestone() {
+    let record = MilestoneRecord(
+        timestamp: "2026-02-18T20:00:00Z",
+        group: "test",
+        pid: 100,
+        label: "worker",
+        event: "group.process.building",
+        detail: "Write"
+    )
+    let line = ProcessGroupReporter.encodeMilestone(record)
+    #expect(line != nil)
+    #expect(line!.contains("group.process.building"))
+    #expect(line!.contains("\"pid\":100"))
+}
+
+@Test func processGroupReporterFileOutput() throws {
+    let tmpDir = NSTemporaryDirectory() + "agentview-test-reporter-\(UUID().uuidString)"
+    let outputPath = tmpDir + "/milestones.ndjson"
+
+    let bus = EventBus()
+    let groupFilePath = tmpDir + "/process-groups.json"
+    let group = ProcessGroupManager(filePath: groupFilePath)
+    group.startListening(eventBus: bus)
+
+    let reporter = ProcessGroupReporter(groupName: "test-group", outputPath: outputPath)
+    reporter.start(eventBus: bus, activePIDs: Set([Int32(88888)]))
+
+    #expect(reporter.isActive == true)
+    #expect(reporter.activeCount == 1)
+
+    // Add process and trigger a state change
+    group.add(pid: 88888, label: "Test worker")
+
+    // Simulate building event -> state change from STARTING to BUILDING
+    bus.publish(AgentViewEvent(type: "process.tool_start", pid: 88888, details: ["tool": AnyCodable("Write")]))
+
+    // Give event processing a moment
+    Thread.sleep(forTimeInterval: 0.1)
+
+    // Verify file was written
+    let fm = FileManager.default
+    #expect(fm.fileExists(atPath: outputPath))
+
+    let content = try String(contentsOfFile: outputPath, encoding: .utf8)
+    let lines = content.split(separator: "\n", omittingEmptySubsequences: true)
+    #expect(lines.count >= 1)
+
+    // Parse the first line as JSON
+    let lineData = lines[0].data(using: .utf8)!
+    let record = try JSONDecoder().decode(MilestoneRecord.self, from: lineData)
+    #expect(record.group == "test-group")
+    #expect(record.pid == 88888)
+    #expect(record.label == "Test worker")
+    #expect(record.event == "group.process.building")
+
+    reporter.stop()
+    #expect(reporter.isActive == false)
+
+    group.stopListening()
+    try? fm.removeItem(atPath: tmpDir)
+}
+
+@Test func processGroupReporterCompletionCallback() throws {
+    let tmpDir = NSTemporaryDirectory() + "agentview-test-reporter-cb-\(UUID().uuidString)"
+    let groupFilePath = tmpDir + "/process-groups.json"
+
+    let bus = EventBus()
+    let group = ProcessGroupManager(filePath: groupFilePath)
+    group.startListening(eventBus: bus)
+
+    var callbackCalled = false
+    let reporter = ProcessGroupReporter(groupName: "test", outputPath: nil)
+    reporter.start(eventBus: bus, activePIDs: Set([Int32(77777)])) {
+        callbackCalled = true
+    }
+
+    group.add(pid: 77777, label: "Finisher")
+
+    // Trigger exit -> DONE state
+    bus.publish(AgentViewEvent(type: "process.exit", pid: 77777, details: ["exit_code": AnyCodable(0)]))
+
+    Thread.sleep(forTimeInterval: 0.1)
+
+    #expect(callbackCalled == true)
+    #expect(reporter.activeCount == 0)
+
+    reporter.stop()
+    group.stopListening()
+    try? FileManager.default.removeItem(atPath: tmpDir)
+}
+
+@Test func processGroupReporterIgnoresUnrelatedEvents() throws {
+    let tmpDir = NSTemporaryDirectory() + "agentview-test-reporter-unr-\(UUID().uuidString)"
+    let outputPath = tmpDir + "/milestones.ndjson"
+
+    let bus = EventBus()
+    let reporter = ProcessGroupReporter(groupName: "test", outputPath: outputPath)
+    reporter.start(eventBus: bus, activePIDs: Set([Int32(66666)]))
+
+    // Publish a non-state-change event — should not produce output
+    bus.publish(AgentViewEvent(type: "process.tool_start", pid: 66666, details: ["tool": AnyCodable("Write")]))
+
+    Thread.sleep(forTimeInterval: 0.1)
+
+    // File should not exist since reporter only listens to state_change events
+    #expect(FileManager.default.fileExists(atPath: outputPath) == false)
+
+    reporter.stop()
+    try? FileManager.default.removeItem(atPath: tmpDir)
+}
+
+@Test func processGroupConfigCodableRoundTrip() throws {
+    let reporterConfig = ProcessGroupConfig.ReporterConfig(defaultOutput: "~/.agentview/group-updates.ndjson")
+    let pgConfig = ProcessGroupConfig(reporter: reporterConfig)
+    let config = AgentViewConfig(processGroup: pgConfig)
+
+    let data = try JSONEncoder().encode(config)
+    let decoded = try JSONDecoder().decode(AgentViewConfig.self, from: data)
+
+    #expect(decoded.processGroup?.reporter?.defaultOutput == "~/.agentview/group-updates.ndjson")
+}
+
+@Test func processGroupConfigInFullConfig() throws {
+    let json = """
+    {
+        "process_group": {
+            "reporter": {
+                "default_output": "~/.agentview/group-updates.ndjson"
+            }
+        }
+    }
+    """
+    let data = json.data(using: .utf8)!
+    let config = try JSONDecoder().decode(AgentViewConfig.self, from: data)
+    #expect(config.processGroup?.reporter?.defaultOutput == "~/.agentview/group-updates.ndjson")
+}
+
+@Test func milestoneEventAllCases() {
+    #expect(MilestoneEvent.allCases.count == 9)
+}

@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import ArgumentParser
 import Foundation
+import Network
 import AgentViewCore
 
 @main
@@ -1358,7 +1359,7 @@ struct ProcessGroupCmd: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "group",
         abstract: "Multi-process dashboard for tracking parallel processes",
-        subcommands: [ProcessGroupAdd.self, ProcessGroupRemove.self, ProcessGroupClear.self, ProcessGroupStatus.self]
+        subcommands: [ProcessGroupAdd.self, ProcessGroupRemove.self, ProcessGroupClear.self, ProcessGroupStatus.self, ProcessGroupReport.self]
     )
 }
 
@@ -1505,6 +1506,215 @@ struct ProcessGroupStatus: ParsableCommand {
         }
 
         print(ProcessGroupManager.formatStatus(processes: processes))
+    }
+}
+
+struct ProcessGroupReport: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "report", abstract: "Stream milestone NDJSON updates for tracked processes")
+
+    @Option(name: .long, help: "Group name (default: \"default\")")
+    var group: String = "default"
+
+    @Option(name: .long, help: "Output path (file to append NDJSON to, or \"-\" / omit for stdout)")
+    var output: String?
+
+    func run() throws {
+        // Resolve output path: config default, explicit flag, or stdout
+        let config = AgentViewConfig.load()
+        let resolvedOutput: String?
+        if let output = output {
+            resolvedOutput = output == "-" ? nil : output
+        } else if let defaultOutput = config.processGroup?.reporter?.defaultOutput {
+            let expanded = (defaultOutput as NSString).expandingTildeInPath
+            resolvedOutput = expanded
+        } else {
+            resolvedOutput = nil
+        }
+
+        // Get current process group status to know which PIDs to track
+        let statusResponse = try callDaemon(method: "process.group.status")
+        var activePIDs = Set<Int32>()
+        if let result = statusResponse.result, let dict = result.value as? [String: AnyCodable],
+           let processesArr = dict["processes"]?.value as? [AnyCodable] {
+            for item in processesArr {
+                guard let d = item.value as? [String: AnyCodable],
+                      let pid = d["pid"]?.value as? Int,
+                      let stateStr = d["state"]?.value as? String else { continue }
+                let state = TrackedProcessState(rawValue: stateStr) ?? .starting
+                if state != .done && state != .failed {
+                    activePIDs.insert(Int32(pid))
+                }
+            }
+        }
+
+        if activePIDs.isEmpty {
+            fputs("No active processes in group. Reporter exiting.\n", stderr)
+            return
+        }
+
+        fputs("Reporting milestones for \(activePIDs.count) active process\(activePIDs.count == 1 ? "" : "es") in group \"\(group)\"...\n", stderr)
+
+        // Prepare file output if needed
+        let fileHandle: FileHandle?
+        if let path = resolvedOutput {
+            let expanded = (path as NSString).expandingTildeInPath
+            let dir = (expanded as NSString).deletingLastPathComponent
+            let fm = FileManager.default
+            if !fm.fileExists(atPath: dir) {
+                try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            }
+            if !fm.fileExists(atPath: expanded) {
+                fm.createFile(atPath: expanded, contents: nil)
+            }
+            fileHandle = FileHandle(forWritingAtPath: expanded)
+            fileHandle?.seekToEndOfFile()
+        } else {
+            fileHandle = nil
+        }
+
+        // Stream state change events from daemon and transform to milestones
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        let groupName = group
+        var remaining = activePIDs
+        let semaphore = DispatchSemaphore(value: 0)
+
+        // Subscribe to process.group.state_change events via daemon streaming
+        let streamParams: [String: AnyCodable] = [
+            "filter": AnyCodable("process.group.state_change"),
+        ]
+
+        // Ensure daemon is running
+        if !DaemonClient.isDaemonRunning() {
+            try DaemonClient.startDaemon()
+            var ready = false
+            for _ in 0..<20 {
+                Thread.sleep(forTimeInterval: 0.25)
+                if DaemonClient.isDaemonRunning() {
+                    ready = true
+                    break
+                }
+            }
+            if !ready {
+                throw ExitCode.failure
+            }
+        }
+
+        let request = JSONRPCRequest(method: "subscribe", params: streamParams)
+        let reqEncoder = JSONEncoder()
+        reqEncoder.keyEncodingStrategy = .convertToSnakeCase
+        var requestData = try reqEncoder.encode(request)
+        requestData.append(contentsOf: [0x0A])
+
+        let endpoint = NWEndpoint.unix(path: DaemonClient.socketPath)
+        let nwParams = NWParameters()
+        nwParams.defaultProtocolStack.transportProtocol = NWProtocolTCP.Options()
+        let connection = NWConnection(to: endpoint, using: nwParams)
+
+        let sigSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        signal(SIGINT, SIG_IGN)
+        sigSource.setEventHandler {
+            connection.cancel()
+        }
+        sigSource.resume()
+
+        func readLoop() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { data, _, isComplete, error in
+                if let data = data, !data.isEmpty {
+                    if let str = String(data: data, encoding: .utf8) {
+                        for line in str.split(separator: "\n", omittingEmptySubsequences: true) {
+                            // Parse the event
+                            guard let lineData = line.data(using: .utf8),
+                                  let event = try? JSONDecoder().decode(AgentViewEvent.self, from: lineData) else {
+                                continue
+                            }
+
+                            // Skip the initial subscribe ack (JSON-RPC response)
+                            guard event.type == "process.group.state_change" else { continue }
+
+                            guard let pid = event.pid,
+                                  let details = event.details,
+                                  let label = details["label"]?.value as? String,
+                                  let oldState = details["old_state"]?.value as? String,
+                                  let newState = details["new_state"]?.value as? String else {
+                                continue
+                            }
+
+                            let lastDetail = details["last_detail"]?.value as? String ?? ""
+                            let exitCode = details["exit_code"]?.value as? Int
+
+                            guard let milestone = MilestoneEvent.from(oldState: oldState, newState: newState, exitCode: exitCode) else {
+                                continue
+                            }
+
+                            let record = MilestoneRecord(
+                                timestamp: event.timestamp,
+                                group: groupName,
+                                pid: Int(pid),
+                                label: label,
+                                event: milestone.rawValue,
+                                detail: lastDetail
+                            )
+
+                            if let recordData = try? encoder.encode(record),
+                               var recordStr = String(data: recordData, encoding: .utf8) {
+                                recordStr += "\n"
+                                if let fh = fileHandle, let bytes = recordStr.data(using: .utf8) {
+                                    fh.write(bytes)
+                                } else {
+                                    Swift.print(recordStr, terminator: "")
+                                    fflush(stdout)
+                                }
+                            }
+
+                            // Track completion
+                            let isTerminal = newState == TrackedProcessState.done.rawValue || newState == TrackedProcessState.failed.rawValue
+                            if isTerminal {
+                                remaining.remove(pid)
+                                if remaining.isEmpty {
+                                    fputs("All processes complete. Reporter exiting.\n", stderr)
+                                    semaphore.signal()
+                                    return
+                                }
+                            }
+                        }
+                    }
+                }
+                if isComplete || error != nil {
+                    semaphore.signal()
+                    return
+                }
+                readLoop()
+            }
+        }
+
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                connection.send(content: requestData, completion: .contentProcessed({ error in
+                    if error != nil {
+                        semaphore.signal()
+                        return
+                    }
+                    readLoop()
+                }))
+            case .failed:
+                semaphore.signal()
+            case .cancelled:
+                semaphore.signal()
+            default:
+                break
+            }
+        }
+
+        let queue = DispatchQueue(label: "agentview.report")
+        connection.start(queue: queue)
+
+        semaphore.wait()
+        sigSource.cancel()
+        connection.cancel()
+        fileHandle?.closeFile()
     }
 }
 
