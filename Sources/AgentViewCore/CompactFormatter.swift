@@ -302,13 +302,45 @@ public enum CompactFormatter {
 
     /// Format action result.
     public static func formatActResult(data: [String: AnyCodable]) -> String {
-        let success = data["success"]?.value as? Bool ?? false
+        // Check for success at top level OR inside nested "result" JSON string
+        var success = data["success"]?.value as? Bool ?? false
         let app = data["app"]?.value as? String ?? ""
-        let action = data["action"]?.value as? String ?? ""
+        var action = data["action"]?.value as? String ?? ""
+        var topError = data["error"]?.value as? String
+
+        // Safari transport returns result as a JSON string — parse it
+        var nested: [String: Any]?
+        if let resultStr = data["result"]?.value as? String,
+           let jsonData = resultStr.data(using: .utf8),
+           let parsed = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+            nested = parsed
+            if let nestedSuccess = parsed["success"] as? Bool {
+                success = nestedSuccess
+            }
+            if let nestedAction = parsed["action"] as? String, action.isEmpty {
+                action = nestedAction
+            }
+            if let nestedError = parsed["error"] as? String {
+                topError = nestedError
+            }
+        }
 
         if !success {
-            let error = data["error"]?.value as? String ?? "unknown error"
+            let error = topError ?? "unknown error"
             return "[\(app)] \(action): failed — \(error)"
+        }
+
+        // Format success result
+        if let n = nested {
+            let matched = n["matched"] as? String ?? ""
+            let score = n["score"] as? Int
+            let nestedAction = n["action"] as? String ?? action
+            if nestedAction == "click" {
+                return "✅ clicked \"\(matched)\"" + (score != nil ? " (score: \(score!))" : "")
+            } else if nestedAction == "fill" {
+                let value = n["value"] as? String ?? ""
+                return "✅ filled \"\(matched)\" = \"\(value)\"" + (score != nil ? " (score: \(score!))" : "")
+            }
         }
 
         var parts = ["[\(app)] \(action): ok"]
@@ -318,7 +350,7 @@ public enum CompactFormatter {
         if let label = data["matched_label"]?.value as? String {
             parts.append("\"\(label)\"")
         }
-        if let result = data["result"]?.value as? String, !result.isEmpty {
+        if let result = data["result"]?.value as? String, !result.isEmpty, nested == nil {
             let truncated = result.count > 100 ? String(result.prefix(100)) + "..." : result
             parts.append("→ \(truncated)")
         }

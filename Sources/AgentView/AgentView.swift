@@ -286,38 +286,34 @@ struct Snapshot: ParsableCommand {
             params["depth"] = AnyCodable(depth)
             let response = try callDaemon(method: "snapshot", params: params)
 
-            if format == "compact" {
-                if let error = response.error {
-                    fputs("Error: \(error.message)\n", stderr)
-                    throw ExitCode.failure
-                }
-                // Daemon returns JSON; decode into AppSnapshot for compact format
-                if let result = response.result {
-                    let enc = JSONOutput.encoder
-                    let data = try enc.encode(result)
-                    let decoder = JSONDecoder()
-                    decoder.keyDecodingStrategy = .convertFromSnakeCase
-                    let snapshot = try decoder.decode(AppSnapshot.self, from: data)
+            if let error = response.error {
+                fputs("Error: \(error.message)\n", stderr)
+                throw ExitCode.failure
+            }
+
+            guard let result = response.result else {
+                print("(empty)")
+                return
+            }
+
+            let enc = JSONOutput.encoder
+            let data = try enc.encode(result)
+
+            // Try to decode as AppSnapshot (AX result)
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            if let snapshot = try? decoder.decode(AppSnapshot.self, from: data),
+               snapshot.stats.enrichedElements > 0 || !snapshot.content.sections.isEmpty {
+                // Valid AX snapshot with content
+                if format == "compact" {
                     let pagParams = PaginationParams(after: after, limit: limit)
                     let (paginated, pagResult) = Paginator.paginateSnapshot(snapshot, params: pagParams)
                     print(CompactFormatter.formatSnapshot(snapshot: paginated, pagination: pagResult))
                 } else {
-                    print("(empty)")
-                }
-            } else {
-                // JSON mode — still paginate
-                if let result = response.result {
-                    let enc = JSONOutput.encoder
-                    let data = try enc.encode(result)
-                    let decoder = JSONDecoder()
-                    decoder.keyDecodingStrategy = .convertFromSnakeCase
-                    let snapshot = try decoder.decode(AppSnapshot.self, from: data)
                     let pagParams = PaginationParams(after: after, limit: limit)
                     let (paginated, pagResult) = Paginator.paginateSnapshot(snapshot, params: pagParams)
-                    // Encode paginated snapshot with pagination metadata
                     let outEnc = pretty ? JSONOutput.prettyEncoder : JSONOutput.encoder
                     var snapshotData = try outEnc.encode(paginated)
-                    // Append pagination info
                     if var dict = try JSONSerialization.jsonObject(with: snapshotData) as? [String: Any] {
                         dict["truncated"] = pagResult.hasMore
                         dict["total"] = pagResult.total
@@ -326,8 +322,37 @@ struct Snapshot: ParsableCommand {
                         snapshotData = try JSONSerialization.data(withJSONObject: dict, options: pretty ? [.prettyPrinted, .sortedKeys] : [.sortedKeys])
                     }
                     print(String(data: snapshotData, encoding: .utf8)!)
+                }
+            } else {
+                // Fallback: might be a Safari web snapshot or empty AX snapshot
+                // Check if it has web snapshot fields (pageType, links, etc.)
+                if let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   dict["pageType"] != nil || dict["links"] != nil {
+                    // This is a Safari web snapshot returned as fallback
+                    if format == "compact" {
+                        if let resultDict = result.value as? [String: AnyCodable] {
+                            print(CompactFormatter.formatWebSnapshot(data: resultDict))
+                        } else {
+                            print(String(data: data, encoding: .utf8)!)
+                        }
+                    } else {
+                        let outEnc = pretty ? JSONOutput.prettyEncoder : JSONOutput.encoder
+                        print(String(data: try outEnc.encode(result), encoding: .utf8)!)
+                    }
                 } else {
-                    try printResponse(response, pretty: pretty)
+                    // Empty AX snapshot with no fallback available
+                    if format == "compact" {
+                        if let snapshot = try? decoder.decode(AppSnapshot.self, from: data) {
+                            let pagParams = PaginationParams(after: after, limit: limit)
+                            let (paginated, pagResult) = Paginator.paginateSnapshot(snapshot, params: pagParams)
+                            print(CompactFormatter.formatSnapshot(snapshot: paginated, pagination: pagResult))
+                        } else {
+                            print(String(data: data, encoding: .utf8)!)
+                        }
+                    } else {
+                        let outEnc = pretty ? JSONOutput.prettyEncoder : JSONOutput.encoder
+                        print(String(data: try outEnc.encode(result), encoding: .utf8)!)
+                    }
                 }
             }
             return

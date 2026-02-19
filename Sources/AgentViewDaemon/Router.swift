@@ -141,24 +141,44 @@ final class Router {
 
         // If AX returned empty (0 enriched elements / no sections), try fallback transports.
         // This happens when the display is off or the screen is locked.
-        if result.success, result.transportUsed == "ax" {
+        if result.success {
             let isEmpty: Bool
-            let decoder = JSONDecoder()
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
-            if let data = result.data,
-               let snapshotData = try? JSONOutput.encode(AnyCodable(data)),
-               let snapshot = try? decoder.decode(AppSnapshot.self, from: snapshotData) {
-                isEmpty = snapshot.stats.enrichedElements == 0 || snapshot.content.sections.isEmpty
+            if let data = result.data {
+                // Check enriched_elements directly from the dict
+                // AnyCodable wraps values — need to unwrap carefully
+                let statsAny = data["stats"]?.value
+                var enriched = 0
+                if let statsDict = statsAny as? [String: AnyCodable] {
+                    enriched = (statsDict["enriched_elements"]?.value as? Int) ?? (statsDict["enrichedElements"]?.value as? Int) ?? 0
+                } else if let statsDict = statsAny as? [String: Any] {
+                    enriched = (statsDict["enriched_elements"] as? Int) ?? (statsDict["enrichedElements"] as? Int) ?? 0
+                }
+                let contentAny = data["content"]?.value
+                var sectionsEmpty = true
+                if let contentDict = contentAny as? [String: AnyCodable] {
+                    if let sections = contentDict["sections"]?.value as? [Any] {
+                        sectionsEmpty = sections.isEmpty
+                    }
+                } else if let contentDict = contentAny as? [String: Any] {
+                    if let sections = contentDict["sections"] as? [Any] {
+                        sectionsEmpty = sections.isEmpty
+                    }
+                }
+                isEmpty = enriched == 0 || sectionsEmpty
+                log("[snapshot] enriched=\(enriched), sectionsEmpty=\(sectionsEmpty), isEmpty=\(isEmpty), transport=\(result.transportUsed)")
             } else {
                 isEmpty = true
+                log("[snapshot] no data, isEmpty=true")
             }
 
             if isEmpty {
-                let isSafari = runningApp.bundleIdentifier?.lowercased().contains("safari") == true
-                    || resolvedName.lowercased().contains("safari")
+                let bundleId = runningApp.bundleIdentifier?.lowercased() ?? ""
+                let isSafari = bundleId.contains("safari") || resolvedName.lowercased().contains("safari")
+                log("[snapshot] fallback: isSafari=\(isSafari), bundleId=\(bundleId), name=\(resolvedName)")
                 if isSafari {
                     // Safari: use SafariTransport.pageSnapshot() which works even when screen is locked
                     let fallback = safariTransport.pageSnapshot()
+                    log("[snapshot] Safari fallback: success=\(fallback.success), error=\(fallback.error ?? "none")")
                     if fallback.success {
                         result = fallback
                     }
