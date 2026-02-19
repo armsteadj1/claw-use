@@ -52,6 +52,12 @@ public final class AXTransport: Transport {
         let refMap = RefMap()
         let snapshot = enricher.snapshot(app: app, maxDepth: depth, refMap: refMap)
 
+        // If AX returned 0 enriched elements, report as empty — lets Router trigger fallback
+        if snapshot.stats.enrichedElements == 0 {
+            stats.recordFailure()
+            return TransportResult(success: false, data: nil, error: "AX returned 0 elements (screen may be off/locked)", transportUsed: name)
+        }
+
         guard let data = try? JSONOutput.encode(snapshot),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             stats.recordFailure()
