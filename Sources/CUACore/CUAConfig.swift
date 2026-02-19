@@ -1,9 +1,9 @@
 import Foundation
 
-// MARK: - AgentView Configuration
+// MARK: - CUA Configuration
 
-/// Full AgentView configuration loaded from ~/.agentview/config.json
-public struct AgentViewConfig: Codable {
+/// Full CUA configuration loaded from ~/.cua/config.json
+public struct CUAConfig: Codable {
     public let gatewayUrl: String?
     public let gatewayToken: String?
     public let hooksToken: String?
@@ -25,13 +25,13 @@ public struct AgentViewConfig: Codable {
     }
 
     /// Load configuration from the default path
-    public static func load(from path: String? = nil) -> AgentViewConfig {
-        let configPath = path ?? (NSHomeDirectory() + "/.agentview/config.json")
+    public static func load(from path: String? = nil) -> CUAConfig {
+        let configPath = path ?? (NSHomeDirectory() + "/.cua/config.json")
         let fm = FileManager.default
         guard fm.fileExists(atPath: configPath),
               let data = fm.contents(atPath: configPath),
-              let config = try? JSONDecoder().decode(AgentViewConfig.self, from: data) else {
-            return AgentViewConfig()
+              let config = try? JSONDecoder().decode(CUAConfig.self, from: data) else {
+            return CUAConfig()
         }
         return config
     }

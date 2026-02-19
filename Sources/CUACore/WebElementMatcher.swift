@@ -23,7 +23,7 @@ public struct WebElementMatcher {
             if (el.offsetParent === null && el.tagName !== 'BODY') continue;
             refIdx++;
             var ref = 'w' + refIdx;
-            el.setAttribute('data-agentview-ref', ref);
+            el.setAttribute('data-cua-ref', ref);
             var text = (el.innerText || '').trim().substring(0, 100);
             var ariaLabel = el.getAttribute('aria-label') || '';
             var placeholder = el.getAttribute('placeholder') || '';

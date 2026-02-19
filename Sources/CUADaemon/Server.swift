@@ -1,13 +1,13 @@
 import Foundation
 import Network
-import AgentViewCore
+import CUACore
 
 /// UDS server that accepts connections and dispatches JSON-RPC requests.
 /// Supports streaming for event subscriptions.
 final class Server {
     private var listener: NWListener?
     private let router: Router
-    private let queue = DispatchQueue(label: "agentviewd.server")
+    private let queue = DispatchQueue(label: "cuad.server")
 
     /// Active streaming connections: subscription ID -> connection
     private var streamingConnections: [String: NWConnection] = [:]
@@ -151,7 +151,7 @@ final class Server {
         receiveMessage(on: connection)
     }
 
-    private func sendEvent(_ event: AgentViewEvent, on connection: NWConnection) {
+    private func sendEvent(_ event: CUAEvent, on connection: NWConnection) {
         do {
             var eventData = try JSONOutput.encode(event)
             eventData.append(contentsOf: [0x0A]) // newline

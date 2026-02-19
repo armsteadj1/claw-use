@@ -18,14 +18,14 @@ public enum ProcessEventType: String, CaseIterable {
 public struct NDJSONParser {
 
     /// Parse a single NDJSON line into a process event type + details
-    public static func parse(line: String, pid: Int32) -> AgentViewEvent? {
+    public static func parse(line: String, pid: Int32) -> CUAEvent? {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
         guard let data = trimmed.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             // Non-JSON output → raw message
-            return AgentViewEvent(
+            return CUAEvent(
                 type: ProcessEventType.message.rawValue,
                 pid: pid,
                 details: ["raw": AnyCodable(trimmed)]
@@ -49,7 +49,7 @@ public struct NDJSONParser {
                     details["command"] = AnyCodable(command)
                 }
             }
-            return AgentViewEvent(
+            return CUAEvent(
                 type: ProcessEventType.toolStart.rawValue,
                 pid: pid,
                 details: details
@@ -70,7 +70,7 @@ public struct NDJSONParser {
                     details["error"] = AnyCodable(errorMsg)
                 }
             }
-            return AgentViewEvent(
+            return CUAEvent(
                 type: ProcessEventType.toolEnd.rawValue,
                 pid: pid,
                 details: details
@@ -80,7 +80,7 @@ public struct NDJSONParser {
             let text = json["text"] as? String
                 ?? (json["delta"] as? [String: Any])?["text"] as? String
                 ?? ""
-            return AgentViewEvent(
+            return CUAEvent(
                 type: ProcessEventType.message.rawValue,
                 pid: pid,
                 details: ["text": AnyCodable(text)]
@@ -90,7 +90,7 @@ public struct NDJSONParser {
             let errorMsg = json["error"] as? String
                 ?? (json["error"] as? [String: Any])?["message"] as? String
                 ?? "unknown error"
-            return AgentViewEvent(
+            return CUAEvent(
                 type: ProcessEventType.error.rawValue,
                 pid: pid,
                 details: ["error": AnyCodable(errorMsg)]
@@ -98,7 +98,7 @@ public struct NDJSONParser {
 
         case "result":
             let text = json["result"] as? String ?? ""
-            return AgentViewEvent(
+            return CUAEvent(
                 type: ProcessEventType.message.rawValue,
                 pid: pid,
                 details: ["text": AnyCodable(text), "final": AnyCodable(true)]
@@ -110,7 +110,7 @@ public struct NDJSONParser {
             if let text = json["text"] as? String {
                 details["text"] = AnyCodable(text)
             }
-            return AgentViewEvent(
+            return CUAEvent(
                 type: ProcessEventType.message.rawValue,
                 pid: pid,
                 details: details
@@ -308,7 +308,7 @@ public final class ProcessWatcher {
         if kill(pid, 0) != 0 {
             // Process has exited
             let exitCode = waitForExitCode()
-            let event = AgentViewEvent(
+            let event = CUAEvent(
                 type: ProcessEventType.exit.rawValue,
                 pid: pid,
                 details: ["exit_code": AnyCodable(exitCode)]
@@ -347,7 +347,7 @@ public final class ProcessWatcher {
             self.lock.unlock()
 
             if elapsed >= self.idleTimeout {
-                let event = AgentViewEvent(
+                let event = CUAEvent(
                     type: ProcessEventType.idle.rawValue,
                     pid: self.pid,
                     details: ["idle_seconds": AnyCodable(Int(elapsed))]

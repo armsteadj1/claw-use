@@ -69,7 +69,7 @@ public final class ProcessGroupManager {
     ]
 
     public init(filePath: String? = nil) {
-        let path = filePath ?? (NSHomeDirectory() + "/.agentview/process-groups.json")
+        let path = filePath ?? (NSHomeDirectory() + "/.cua/process-groups.json")
         self.filePath = path
         self.store = ProcessGroupStore()
         load()
@@ -181,7 +181,7 @@ public final class ProcessGroupManager {
 
     // MARK: - State Machine
 
-    private func handleEvent(_ event: AgentViewEvent) {
+    private func handleEvent(_ event: CUAEvent) {
         guard let pid = event.pid else { return }
 
         lock.lock()
@@ -263,8 +263,8 @@ public final class ProcessGroupManager {
         if changed {
             save()
             // Emit process.group.state_change event
-            eventBus?.publish(AgentViewEvent(
-                type: AgentViewEventType.processGroupStateChange.rawValue,
+            eventBus?.publish(CUAEvent(
+                type: CUAEventType.processGroupStateChange.rawValue,
                 pid: pid,
                 details: [
                     "label": AnyCodable(process.label),

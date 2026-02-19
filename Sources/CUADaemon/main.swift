@@ -1,19 +1,19 @@
 import Foundation
-import AgentViewCore
+import CUACore
 
 // MARK: - Configuration
 
-let agentviewDir = NSHomeDirectory() + "/.agentview"
-let socketPath = agentviewDir + "/sock"
-let pidFilePath = agentviewDir + "/pid"
+let cuaDir = NSHomeDirectory() + "/.cua"
+let socketPath = cuaDir + "/sock"
+let pidFilePath = cuaDir + "/pid"
 
 // MARK: - PID file management
 
 func writePidFile() {
     let pid = ProcessInfo.processInfo.processIdentifier
     let fm = FileManager.default
-    if !fm.fileExists(atPath: agentviewDir) {
-        try? fm.createDirectory(atPath: agentviewDir, withIntermediateDirectories: true)
+    if !fm.fileExists(atPath: cuaDir) {
+        try? fm.createDirectory(atPath: cuaDir, withIntermediateDirectories: true)
     }
     try? "\(pid)".write(toFile: pidFilePath, atomically: true, encoding: .utf8)
 }
@@ -42,7 +42,7 @@ func setupSignalHandlers(server: Server, screenState: ScreenState, cdpPool: CDPC
 
 // MARK: - Main
 
-log("agentviewd starting...")
+log("cuad starting...")
 
 // Initialize wake client (connects to OpenClaw gateway)
 let wakeClient = WakeClient.fromConfig()
@@ -125,7 +125,7 @@ do {
     exit(1)
 }
 
-log("agentviewd ready (pid \(ProcessInfo.processInfo.processIdentifier))")
+log("cuad ready (pid \(ProcessInfo.processInfo.processIdentifier))")
 log("  transports: ax, cdp, applescript, safari")
 log("  event bus: monitoring app lifecycle + AX notifications")
 log("  cache: TTL ax=\(snapshotCache.axTTL)s cdp=\(snapshotCache.cdpTTL)s applescript=\(snapshotCache.applescriptTTL)s")

@@ -3,13 +3,13 @@ import ApplicationServices
 import ArgumentParser
 import Foundation
 import Network
-import AgentViewCore
+import CUACore
 
 @main
-struct AgentView: ParsableCommand {
+struct CUA: ParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "agentview",
-        abstract: "Read macOS Accessibility APIs and expose structured UI state to AI agents.",
+        commandName: "cua",
+        abstract: "Allowing claws to make better use of any application.",
         version: "0.3.0",
         subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self, ProcessCmd.self, EventsCmd.self]
     )
@@ -17,7 +17,7 @@ struct AgentView: ParsableCommand {
 
 // MARK: - Helper: route through daemon or fallback to direct
 
-/// Try daemon first; if unavailable, run directly via AgentViewCore
+/// Try daemon first; if unavailable, run directly via CUACore
 private func callDaemon(method: String, params: [String: AnyCodable]? = nil) throws -> JSONRPCResponse {
     do {
         return try DaemonClient.call(method: method, params: params)
@@ -83,7 +83,7 @@ private func printFormattedResponse(
 
 struct Daemon: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Manage the agentviewd daemon",
+        abstract: "Manage the cuad daemon",
         subcommands: [DaemonStart.self, DaemonStop.self, DaemonStatus.self]
     )
 }
@@ -1261,7 +1261,7 @@ struct Screenshot: ParsableCommand {
     @Argument(help: "App name (partial match, case-insensitive)")
     var app: String
 
-    @Option(name: .long, help: "Output file path (default: /tmp/agentview-screenshot-<app>-<timestamp>.png)")
+    @Option(name: .long, help: "Output file path (default: /tmp/cua-screenshot-<app>-<timestamp>.png)")
     var output: String?
 
     @Option(name: .long, help: "Output format (compact or json)")

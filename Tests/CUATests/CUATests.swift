@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import AgentViewCore
+@testable import CUACore
 
 // MARK: - AnyCodable Tests
 
@@ -992,8 +992,8 @@ final class MockTransport: Transport {
 @Test func eventBusPublishAndRetrieve() {
     let bus = EventBus()
 
-    bus.publish(AgentViewEvent(type: "test.event", app: "TestApp"))
-    bus.publish(AgentViewEvent(type: "test.other", app: "OtherApp"))
+    bus.publish(CUAEvent(type: "test.event", app: "TestApp"))
+    bus.publish(CUAEvent(type: "test.other", app: "OtherApp"))
 
     let events = bus.getRecentEvents()
     #expect(events.count == 2)
@@ -1004,9 +1004,9 @@ final class MockTransport: Transport {
 @Test func eventBusFilterByApp() {
     let bus = EventBus()
 
-    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
-    bus.publish(AgentViewEvent(type: "app.launched", app: "Finder"))
-    bus.publish(AgentViewEvent(type: "app.activated", app: "Safari"))
+    bus.publish(CUAEvent(type: "app.launched", app: "Safari"))
+    bus.publish(CUAEvent(type: "app.launched", app: "Finder"))
+    bus.publish(CUAEvent(type: "app.activated", app: "Safari"))
 
     let safariEvents = bus.getRecentEvents(appFilter: "Safari")
     #expect(safariEvents.count == 2)
@@ -1016,9 +1016,9 @@ final class MockTransport: Transport {
 @Test func eventBusFilterByType() {
     let bus = EventBus()
 
-    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
-    bus.publish(AgentViewEvent(type: "app.terminated", app: "Safari"))
-    bus.publish(AgentViewEvent(type: "app.launched", app: "Finder"))
+    bus.publish(CUAEvent(type: "app.launched", app: "Safari"))
+    bus.publish(CUAEvent(type: "app.terminated", app: "Safari"))
+    bus.publish(CUAEvent(type: "app.launched", app: "Finder"))
 
     let launchEvents = bus.getRecentEvents(typeFilters: Set(["app.launched"]))
     #expect(launchEvents.count == 2)
@@ -1029,7 +1029,7 @@ final class MockTransport: Transport {
     let bus = EventBus()
 
     for i in 0..<10 {
-        bus.publish(AgentViewEvent(type: "test.\(i)", app: "App"))
+        bus.publish(CUAEvent(type: "test.\(i)", app: "App"))
     }
 
     let limited = bus.getRecentEvents(limit: 3)
@@ -1045,7 +1045,7 @@ final class MockTransport: Transport {
 
     // Publish more than 100 events
     for i in 0..<120 {
-        bus.publish(AgentViewEvent(type: "test.\(i)", app: "App"))
+        bus.publish(CUAEvent(type: "test.\(i)", app: "App"))
     }
 
     #expect(bus.eventCount == 100)  // Capped at 100
@@ -1058,20 +1058,20 @@ final class MockTransport: Transport {
 
 @Test func eventBusSubscribeAndCallback() {
     let bus = EventBus()
-    var received: [AgentViewEvent] = []
+    var received: [CUAEvent] = []
 
     let subId = bus.subscribe { event in
         received.append(event)
     }
 
-    bus.publish(AgentViewEvent(type: "test.event", app: "TestApp"))
-    bus.publish(AgentViewEvent(type: "test.other", app: "OtherApp"))
+    bus.publish(CUAEvent(type: "test.event", app: "TestApp"))
+    bus.publish(CUAEvent(type: "test.other", app: "OtherApp"))
 
     #expect(received.count == 2)
     #expect(received[0].type == "test.event")
 
     bus.unsubscribe(subId)
-    bus.publish(AgentViewEvent(type: "test.after_unsub", app: "TestApp"))
+    bus.publish(CUAEvent(type: "test.after_unsub", app: "TestApp"))
 
     // Should not receive events after unsubscribe
     #expect(received.count == 2)
@@ -1079,15 +1079,15 @@ final class MockTransport: Transport {
 
 @Test func eventBusSubscribeWithAppFilter() {
     let bus = EventBus()
-    var received: [AgentViewEvent] = []
+    var received: [CUAEvent] = []
 
     let _ = bus.subscribe(appFilter: "Safari") { event in
         received.append(event)
     }
 
-    bus.publish(AgentViewEvent(type: "test.event", app: "Safari"))
-    bus.publish(AgentViewEvent(type: "test.event", app: "Finder"))
-    bus.publish(AgentViewEvent(type: "test.other", app: "Safari"))
+    bus.publish(CUAEvent(type: "test.event", app: "Safari"))
+    bus.publish(CUAEvent(type: "test.event", app: "Finder"))
+    bus.publish(CUAEvent(type: "test.other", app: "Safari"))
 
     #expect(received.count == 2)
     #expect(received.allSatisfy { $0.app == "Safari" })
@@ -1095,15 +1095,15 @@ final class MockTransport: Transport {
 
 @Test func eventBusSubscribeWithTypeFilter() {
     let bus = EventBus()
-    var received: [AgentViewEvent] = []
+    var received: [CUAEvent] = []
 
     let _ = bus.subscribe(typeFilters: Set(["app.launched"])) { event in
         received.append(event)
     }
 
-    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
-    bus.publish(AgentViewEvent(type: "app.terminated", app: "Safari"))
-    bus.publish(AgentViewEvent(type: "app.launched", app: "Finder"))
+    bus.publish(CUAEvent(type: "app.launched", app: "Safari"))
+    bus.publish(CUAEvent(type: "app.terminated", app: "Safari"))
+    bus.publish(CUAEvent(type: "app.launched", app: "Finder"))
 
     #expect(received.count == 2)
     #expect(received.allSatisfy { $0.type == "app.launched" })
@@ -1126,10 +1126,10 @@ final class MockTransport: Transport {
     #expect(bus.subscriberCount == 0)
 }
 
-// MARK: - AgentViewEvent Tests
+// MARK: - CUAEvent Tests
 
-@Test func agentViewEventEncoding() throws {
-    let event = AgentViewEvent(
+@Test func cuaEventEncoding() throws {
+    let event = CUAEvent(
         type: "app.launched",
         app: "Safari",
         bundleId: "com.apple.Safari",
@@ -1144,40 +1144,40 @@ final class MockTransport: Transport {
     #expect(json.contains("1234"))
 }
 
-@Test func agentViewEventTypeRawValues() {
-    #expect(AgentViewEventType.appLaunched.rawValue == "app.launched")
-    #expect(AgentViewEventType.appTerminated.rawValue == "app.terminated")
-    #expect(AgentViewEventType.appActivated.rawValue == "app.activated")
-    #expect(AgentViewEventType.appDeactivated.rawValue == "app.deactivated")
-    #expect(AgentViewEventType.focusChanged.rawValue == "ax.focus_changed")
-    #expect(AgentViewEventType.valueChanged.rawValue == "ax.value_changed")
-    #expect(AgentViewEventType.windowCreated.rawValue == "ax.window_created")
-    #expect(AgentViewEventType.elementDestroyed.rawValue == "ax.element_destroyed")
-    #expect(AgentViewEventType.screenLocked.rawValue == "screen.locked")
-    #expect(AgentViewEventType.screenUnlocked.rawValue == "screen.unlocked")
-    #expect(AgentViewEventType.displaySleep.rawValue == "screen.display_sleep")
-    #expect(AgentViewEventType.displayWake.rawValue == "screen.display_wake")
+@Test func cuaEventTypeRawValues() {
+    #expect(CUAEventType.appLaunched.rawValue == "app.launched")
+    #expect(CUAEventType.appTerminated.rawValue == "app.terminated")
+    #expect(CUAEventType.appActivated.rawValue == "app.activated")
+    #expect(CUAEventType.appDeactivated.rawValue == "app.deactivated")
+    #expect(CUAEventType.focusChanged.rawValue == "ax.focus_changed")
+    #expect(CUAEventType.valueChanged.rawValue == "ax.value_changed")
+    #expect(CUAEventType.windowCreated.rawValue == "ax.window_created")
+    #expect(CUAEventType.elementDestroyed.rawValue == "ax.element_destroyed")
+    #expect(CUAEventType.screenLocked.rawValue == "screen.locked")
+    #expect(CUAEventType.screenUnlocked.rawValue == "screen.unlocked")
+    #expect(CUAEventType.displaySleep.rawValue == "screen.display_sleep")
+    #expect(CUAEventType.displayWake.rawValue == "screen.display_wake")
 }
 
 // MARK: - EventSubscription Filter Tests
 
 @Test func eventSubscriptionMatchesAll() {
     let sub = EventSubscription(id: "test", callback: { _ in })
-    let event = AgentViewEvent(type: "app.launched", app: "Safari")
+    let event = CUAEvent(type: "app.launched", app: "Safari")
     #expect(sub.matches(event) == true)
 }
 
 @Test func eventSubscriptionAppFilter() {
     let sub = EventSubscription(id: "test", appFilter: "Safari", callback: { _ in })
-    #expect(sub.matches(AgentViewEvent(type: "app.launched", app: "Safari")) == true)
-    #expect(sub.matches(AgentViewEvent(type: "app.launched", app: "Finder")) == false)
+    #expect(sub.matches(CUAEvent(type: "app.launched", app: "Safari")) == true)
+    #expect(sub.matches(CUAEvent(type: "app.launched", app: "Finder")) == false)
 }
 
 @Test func eventSubscriptionTypeFilter() {
     let sub = EventSubscription(id: "test", typeFilters: Set(["app.launched", "app.terminated"]), callback: { _ in })
-    #expect(sub.matches(AgentViewEvent(type: "app.launched", app: "Safari")) == true)
-    #expect(sub.matches(AgentViewEvent(type: "app.terminated", app: "Safari")) == true)
-    #expect(sub.matches(AgentViewEvent(type: "app.activated", app: "Safari")) == false)
+    #expect(sub.matches(CUAEvent(type: "app.launched", app: "Safari")) == true)
+    #expect(sub.matches(CUAEvent(type: "app.terminated", app: "Safari")) == true)
+    #expect(sub.matches(CUAEvent(type: "app.activated", app: "Safari")) == false)
 }
 
 // MARK: - PageAnalyzer Tests
@@ -1206,7 +1206,7 @@ final class MockTransport: Transport {
     let script = WebElementMatcher.enumerationScript
     #expect(!script.isEmpty)
     #expect(script.contains("querySelectorAll"))
-    #expect(script.contains("data-agentview-ref"))
+    #expect(script.contains("data-cua-ref"))
     #expect(script.contains("JSON.stringify"))
 }
 
@@ -1550,10 +1550,10 @@ func makeTestElement(ref: String, role: String, label: String) -> Element {
 }
 
 @Test func compactFormatterFormatScreenshot() {
-    let data = ScreenCaptureResult(success: true, path: "/tmp/agentview-screenshot-safari-1234567.png", width: 1325, height: 941, error: nil)
+    let data = ScreenCaptureResult(success: true, path: "/tmp/cua-screenshot-safari-1234567.png", width: 1325, height: 941, error: nil)
     let result = CompactFormatter.formatScreenshot(data: data)
     #expect(result.contains("1325x941"))
-    #expect(result.contains("/tmp/agentview-screenshot-safari-1234567.png"))
+    #expect(result.contains("/tmp/cua-screenshot-safari-1234567.png"))
 }
 
 @Test func compactFormatterFormatScreenshotError() {
@@ -1878,15 +1878,15 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     #expect(ProcessEventType.allCases.count == 6)
 }
 
-// MARK: - AgentViewEventType Process Types
+// MARK: - CUAEventType Process Types
 
-@Test func agentViewEventTypeProcessRawValues() {
-    #expect(AgentViewEventType.processToolStart.rawValue == "process.tool_start")
-    #expect(AgentViewEventType.processToolEnd.rawValue == "process.tool_end")
-    #expect(AgentViewEventType.processMessage.rawValue == "process.message")
-    #expect(AgentViewEventType.processError.rawValue == "process.error")
-    #expect(AgentViewEventType.processIdle.rawValue == "process.idle")
-    #expect(AgentViewEventType.processExit.rawValue == "process.exit")
+@Test func cuaEventTypeProcessRawValues() {
+    #expect(CUAEventType.processToolStart.rawValue == "process.tool_start")
+    #expect(CUAEventType.processToolEnd.rawValue == "process.tool_end")
+    #expect(CUAEventType.processMessage.rawValue == "process.message")
+    #expect(CUAEventType.processError.rawValue == "process.error")
+    #expect(CUAEventType.processIdle.rawValue == "process.idle")
+    #expect(CUAEventType.processExit.rawValue == "process.exit")
 }
 
 // MARK: - NDJSONParser Tests
@@ -2099,7 +2099,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     let myPid = ProcessInfo.processInfo.processIdentifier
 
     // Watch with a log path (file doesn't need to exist yet)
-    let result = monitor.watch(pid: myPid, logPath: "/tmp/agentview-test-nonexistent.log")
+    let result = monitor.watch(pid: myPid, logPath: "/tmp/cua-test-nonexistent.log")
     #expect(result == true)
     #expect(monitor.watchCount == 1)
 
@@ -2108,7 +2108,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 
 @Test func processMonitorLogFileTailing() throws {
     let bus = EventBus()
-    var received: [AgentViewEvent] = []
+    var received: [CUAEvent] = []
     let lock = NSLock()
 
     let _ = bus.subscribe(typeFilters: Set(ProcessEventType.allCases.map { $0.rawValue })) { event in
@@ -2118,7 +2118,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     }
 
     let myPid = ProcessInfo.processInfo.processIdentifier
-    let logPath = "/tmp/agentview-test-\(UUID().uuidString).log"
+    let logPath = "/tmp/cua-test-\(UUID().uuidString).log"
 
     // Create the log file
     FileManager.default.createFile(atPath: logPath, contents: nil)
@@ -2188,10 +2188,10 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 @Test func eventBusFilterByProcessTypes() {
     let bus = EventBus()
 
-    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
-    bus.publish(AgentViewEvent(type: "process.tool_start", pid: 123, details: ["tool": AnyCodable("Read")]))
-    bus.publish(AgentViewEvent(type: "process.tool_end", pid: 123, details: ["tool": AnyCodable("Read")]))
-    bus.publish(AgentViewEvent(type: "app.terminated", app: "Safari"))
+    bus.publish(CUAEvent(type: "app.launched", app: "Safari"))
+    bus.publish(CUAEvent(type: "process.tool_start", pid: 123, details: ["tool": AnyCodable("Read")]))
+    bus.publish(CUAEvent(type: "process.tool_end", pid: 123, details: ["tool": AnyCodable("Read")]))
+    bus.publish(CUAEvent(type: "app.terminated", app: "Safari"))
 
     let processEvents = bus.getRecentEvents(typeFilters: Set(["process.tool_start", "process.tool_end"]))
     #expect(processEvents.count == 2)
@@ -2200,18 +2200,18 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 
 @Test func eventBusSubscribeToProcessEvents() {
     let bus = EventBus()
-    var received: [AgentViewEvent] = []
+    var received: [CUAEvent] = []
 
     let _ = bus.subscribe(typeFilters: Set(ProcessEventType.allCases.map { $0.rawValue })) { event in
         received.append(event)
     }
 
     // Publish mix of events
-    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
-    bus.publish(AgentViewEvent(type: "process.tool_start", pid: 100))
-    bus.publish(AgentViewEvent(type: "process.message", pid: 100))
-    bus.publish(AgentViewEvent(type: "ax.focus_changed", app: "Finder"))
-    bus.publish(AgentViewEvent(type: "process.exit", pid: 100))
+    bus.publish(CUAEvent(type: "app.launched", app: "Safari"))
+    bus.publish(CUAEvent(type: "process.tool_start", pid: 100))
+    bus.publish(CUAEvent(type: "process.message", pid: 100))
+    bus.publish(CUAEvent(type: "ax.focus_changed", app: "Finder"))
+    bus.publish(CUAEvent(type: "process.exit", pid: 100))
 
     #expect(received.count == 3)
     #expect(received.allSatisfy { $0.type.hasPrefix("process.") })
@@ -2246,7 +2246,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupAddAndStatus() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
     let group = ProcessGroupManager(filePath: path)
 
     let added = group.add(pid: 100, label: "Issue #42")
@@ -2264,7 +2264,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupAddDuplicate() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
     let group = ProcessGroupManager(filePath: path)
 
     let first = group.add(pid: 100, label: "Issue #42")
@@ -2277,7 +2277,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupRemove() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
     let group = ProcessGroupManager(filePath: path)
 
     group.add(pid: 100, label: "Issue #42")
@@ -2295,7 +2295,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupClear() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
     let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
     group.startListening(eventBus: bus)
@@ -2305,8 +2305,8 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     group.add(pid: 300, label: "Failed process")
 
     // Simulate done + failed via events
-    bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 200, details: ["exit_code": AnyCodable(0)]))
-    bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 300, details: ["exit_code": AnyCodable(1)]))
+    bus.publish(CUAEvent(type: ProcessEventType.exit.rawValue, pid: 200, details: ["exit_code": AnyCodable(0)]))
+    bus.publish(CUAEvent(type: ProcessEventType.exit.rawValue, pid: 300, details: ["exit_code": AnyCodable(1)]))
 
     let cleared = group.clear()
     #expect(cleared == 2) // done + failed removed
@@ -2320,7 +2320,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupStateMachineBuilding() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
     let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
     group.startListening(eventBus: bus)
@@ -2328,7 +2328,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     group.add(pid: 100, label: "Test")
 
     // tool_start → BUILDING
-    bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: ["tool": AnyCodable("Read")]))
+    bus.publish(CUAEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: ["tool": AnyCodable("Read")]))
 
     let processes = group.status()
     #expect(processes[0].state == .building)
@@ -2339,7 +2339,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupStateMachineTesting() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
     let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
     group.startListening(eventBus: bus)
@@ -2347,7 +2347,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     group.add(pid: 100, label: "Test")
 
     // tool_start with test command → TESTING
-    bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: [
+    bus.publish(CUAEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: [
         "tool": AnyCodable("Bash"),
         "command": AnyCodable("npm test"),
     ]))
@@ -2360,14 +2360,14 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupStateMachineIdle() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
     let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
     group.startListening(eventBus: bus)
 
     group.add(pid: 100, label: "Test")
 
-    bus.publish(AgentViewEvent(type: ProcessEventType.idle.rawValue, pid: 100, details: ["idle_seconds": AnyCodable(360)]))
+    bus.publish(CUAEvent(type: ProcessEventType.idle.rawValue, pid: 100, details: ["idle_seconds": AnyCodable(360)]))
 
     let processes = group.status()
     #expect(processes[0].state == .idle)
@@ -2378,14 +2378,14 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupStateMachineError() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
     let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
     group.startListening(eventBus: bus)
 
     group.add(pid: 100, label: "Test")
 
-    bus.publish(AgentViewEvent(type: ProcessEventType.error.rawValue, pid: 100, details: ["error": AnyCodable("Rate limit")]))
+    bus.publish(CUAEvent(type: ProcessEventType.error.rawValue, pid: 100, details: ["error": AnyCodable("Rate limit")]))
 
     let processes = group.status()
     #expect(processes[0].state == .error)
@@ -2396,14 +2396,14 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupStateMachineDone() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
     let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
     group.startListening(eventBus: bus)
 
     group.add(pid: 100, label: "Test")
 
-    bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 100, details: ["exit_code": AnyCodable(0)]))
+    bus.publish(CUAEvent(type: ProcessEventType.exit.rawValue, pid: 100, details: ["exit_code": AnyCodable(0)]))
 
     let processes = group.status()
     #expect(processes[0].state == .done)
@@ -2414,14 +2414,14 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupStateMachineFailed() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
     let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
     group.startListening(eventBus: bus)
 
     group.add(pid: 100, label: "Test")
 
-    bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 100, details: ["exit_code": AnyCodable(1)]))
+    bus.publish(CUAEvent(type: ProcessEventType.exit.rawValue, pid: 100, details: ["exit_code": AnyCodable(1)]))
 
     let processes = group.status()
     #expect(processes[0].state == .failed)
@@ -2432,7 +2432,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupTerminalStatesStick() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
     let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
     group.startListening(eventBus: bus)
@@ -2440,11 +2440,11 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     group.add(pid: 100, label: "Test")
 
     // Exit with code 0 → DONE
-    bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 100, details: ["exit_code": AnyCodable(0)]))
+    bus.publish(CUAEvent(type: ProcessEventType.exit.rawValue, pid: 100, details: ["exit_code": AnyCodable(0)]))
     #expect(group.status()[0].state == .done)
 
     // Subsequent events should NOT change state
-    bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: ["tool": AnyCodable("Read")]))
+    bus.publish(CUAEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: ["tool": AnyCodable("Read")]))
     #expect(group.status()[0].state == .done) // Still DONE
 
     group.stopListening()
@@ -2452,13 +2452,13 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupIgnoresUnregisteredPids() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
     let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
     group.startListening(eventBus: bus)
 
     // No processes registered — events for PID 999 should be ignored
-    bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 999, details: ["tool": AnyCodable("Read")]))
+    bus.publish(CUAEvent(type: ProcessEventType.toolStart.rawValue, pid: 999, details: ["tool": AnyCodable("Read")]))
     #expect(group.count == 0)
 
     group.stopListening()
@@ -2466,7 +2466,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupPersistence() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
 
     // Create and populate
     do {
@@ -2475,7 +2475,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
         group.startListening(eventBus: bus)
         group.add(pid: 100, label: "Issue #42")
         group.add(pid: 200, label: "Issue #43")
-        bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: ["tool": AnyCodable("Bash")]))
+        bus.publish(CUAEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: ["tool": AnyCodable("Bash")]))
         group.stopListening()
     }
 
@@ -2531,7 +2531,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupMultipleTestPatterns() {
-    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let path = "/tmp/cua-test-processgroup-\(UUID().uuidString).json"
     let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
     group.startListening(eventBus: bus)
@@ -2541,7 +2541,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     for (i, cmd) in testCommands.enumerated() {
         let pid = Int32(1000 + i)
         group.add(pid: pid, label: "Test \(cmd)")
-        bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: pid, details: [
+        bus.publish(CUAEvent(type: ProcessEventType.toolStart.rawValue, pid: pid, details: [
             "tool": AnyCodable("Bash"),
             "command": AnyCodable(cmd),
         ]))
@@ -2656,7 +2656,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 
 @Test func eventBusSubscribeWithGlobFilter() {
     let bus = EventBus()
-    var received: [AgentViewEvent] = []
+    var received: [CUAEvent] = []
 
     // Subscribe with a glob filter for process.*
     let subId = bus.subscribe(typeFilters: Set(["process.*"])) { event in
@@ -2664,11 +2664,11 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     }
 
     // Publish matching event
-    bus.publish(AgentViewEvent(type: "process.error", pid: 100, details: ["error": AnyCodable("test")]))
+    bus.publish(CUAEvent(type: "process.error", pid: 100, details: ["error": AnyCodable("test")]))
     // Publish non-matching event
-    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
+    bus.publish(CUAEvent(type: "app.launched", app: "Safari"))
     // Publish another matching event
-    bus.publish(AgentViewEvent(type: "process.exit", pid: 100))
+    bus.publish(CUAEvent(type: "process.exit", pid: 100))
 
     #expect(received.count == 2)
     #expect(received[0].type == "process.error")
@@ -2679,10 +2679,10 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 
 @Test func eventBusGetRecentEventsWithGlobFilter() {
     let bus = EventBus()
-    bus.publish(AgentViewEvent(type: "process.error", pid: 100))
-    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
-    bus.publish(AgentViewEvent(type: "process.exit", pid: 100))
-    bus.publish(AgentViewEvent(type: "process.group.state_change", pid: 200))
+    bus.publish(CUAEvent(type: "process.error", pid: 100))
+    bus.publish(CUAEvent(type: "app.launched", app: "Safari"))
+    bus.publish(CUAEvent(type: "process.exit", pid: 100))
+    bus.publish(CUAEvent(type: "process.group.state_change", pid: 200))
 
     let processEvents = bus.getRecentEvents(typeFilters: Set(["process.*"]))
     #expect(processEvents.count == 3) // process.error, process.exit, process.group.state_change
@@ -2697,8 +2697,8 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 
 @Test func eventBusMultipleSubscribersReceiveEvents() {
     let bus = EventBus()
-    var received1: [AgentViewEvent] = []
-    var received2: [AgentViewEvent] = []
+    var received1: [CUAEvent] = []
+    var received2: [CUAEvent] = []
 
     let sub1 = bus.subscribe(typeFilters: Set(["process.*"])) { event in
         received1.append(event)
@@ -2707,8 +2707,8 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
         received2.append(event)
     }
 
-    bus.publish(AgentViewEvent(type: "process.error", pid: 100))
-    bus.publish(AgentViewEvent(type: "process.exit", pid: 100))
+    bus.publish(CUAEvent(type: "process.error", pid: 100))
+    bus.publish(CUAEvent(type: "process.exit", pid: 100))
 
     #expect(received1.count == 2) // glob matches both
     #expect(received2.count == 1) // exact matches only error
@@ -2721,12 +2721,12 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 
 @Test func processGroupEmitsStateChangeEvent() {
     let bus = EventBus()
-    let tmpDir = NSTemporaryDirectory() + "agentview-test-\(UUID().uuidString)"
+    let tmpDir = NSTemporaryDirectory() + "cua-test-\(UUID().uuidString)"
     let filePath = tmpDir + "/process-groups.json"
     let group = ProcessGroupManager(filePath: filePath)
     group.startListening(eventBus: bus)
 
-    var stateChanges: [AgentViewEvent] = []
+    var stateChanges: [CUAEvent] = []
     let subId = bus.subscribe(typeFilters: Set(["process.group.state_change"])) { event in
         stateChanges.append(event)
     }
@@ -2734,7 +2734,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     group.add(pid: 99999, label: "Test process")
 
     // Simulate an error event which should trigger state change
-    bus.publish(AgentViewEvent(type: "process.error", pid: 99999, details: ["error": AnyCodable("build failed")]))
+    bus.publish(CUAEvent(type: "process.error", pid: 99999, details: ["error": AnyCodable("build failed")]))
 
     #expect(stateChanges.count == 1)
     #expect(stateChanges[0].type == "process.group.state_change")
@@ -2749,13 +2749,13 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupStateChangeEventType() {
-    #expect(AgentViewEventType.processGroupStateChange.rawValue == "process.group.state_change")
+    #expect(CUAEventType.processGroupStateChange.rawValue == "process.group.state_change")
 }
 
-// MARK: - AgentViewConfig Tests
+// MARK: - CUAConfig Tests
 
-@Test func agentViewConfigDefaults() {
-    let config = AgentViewConfig()
+@Test func cuaConfigDefaults() {
+    let config = CUAConfig()
     let resolved = config.resolvedEventFile
     #expect(resolved.enabled == false)
     #expect(resolved.sessionKey == "main")
@@ -2765,9 +2765,9 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     #expect(resolved.priority.contains("process.group.state_change"))
 }
 
-@Test func agentViewConfigResolvedEnabled() {
+@Test func cuaConfigResolvedEnabled() {
     let eventFileConfig = EventFileConfig(enabled: true, path: "/tmp/test-event.json", priority: ["process.error"], sessionKey: "test")
-    let config = AgentViewConfig(eventFile: eventFileConfig)
+    let config = CUAConfig(eventFile: eventFileConfig)
     let resolved = config.resolvedEventFile
     #expect(resolved.enabled == true)
     #expect(resolved.path == "/tmp/test-event.json")
@@ -2775,29 +2775,29 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     #expect(resolved.sessionKey == "test")
 }
 
-@Test func agentViewConfigLoadMissingFile() {
-    let config = AgentViewConfig.load(from: "/nonexistent/config.json")
+@Test func cuaConfigLoadMissingFile() {
+    let config = CUAConfig.load(from: "/nonexistent/config.json")
     #expect(config.eventFile == nil)
     #expect(config.gatewayUrl == nil)
 }
 
-@Test func agentViewConfigCodableRoundTrip() throws {
-    let eventFileConfig = EventFileConfig(enabled: true, path: "~/.agentview/pending-event.json",
+@Test func cuaConfigCodableRoundTrip() throws {
+    let eventFileConfig = EventFileConfig(enabled: true, path: "~/.cua/pending-event.json",
                                           priority: ["process.error", "process.exit"], sessionKey: "main")
-    let config = AgentViewConfig(gatewayUrl: "https://example.com", eventFile: eventFileConfig)
+    let config = CUAConfig(gatewayUrl: "https://example.com", eventFile: eventFileConfig)
 
     let data = try JSONEncoder().encode(config)
-    let decoded = try JSONDecoder().decode(AgentViewConfig.self, from: data)
+    let decoded = try JSONDecoder().decode(CUAConfig.self, from: data)
 
     #expect(decoded.gatewayUrl == "https://example.com")
     #expect(decoded.eventFile?.enabled == true)
-    #expect(decoded.eventFile?.path == "~/.agentview/pending-event.json")
+    #expect(decoded.eventFile?.path == "~/.cua/pending-event.json")
     #expect(decoded.eventFile?.priority?.count == 2)
     #expect(decoded.eventFile?.sessionKey == "main")
 }
 
-@Test func agentViewConfigDefaultPriorityEvents() {
-    let defaults = AgentViewConfig.defaultPriorityEvents
+@Test func cuaConfigDefaultPriorityEvents() {
+    let defaults = CUAConfig.defaultPriorityEvents
     #expect(defaults.contains("process.error"))
     #expect(defaults.contains("process.exit"))
     #expect(defaults.contains("process.idle"))
@@ -2812,7 +2812,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     let bus = EventBus()
     writer.start(eventBus: bus)
 
-    bus.publish(AgentViewEvent(type: "process.error", pid: 100))
+    bus.publish(CUAEvent(type: "process.error", pid: 100))
 
     #expect(FileManager.default.fileExists(atPath: "/tmp/should-not-exist.json") == false)
     #expect(writer.isActive == false)
@@ -2820,7 +2820,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func eventFileWriterWritesHighPriorityEvent() throws {
-    let tmpPath = NSTemporaryDirectory() + "agentview-test-event-\(UUID().uuidString).json"
+    let tmpPath = NSTemporaryDirectory() + "cua-test-event-\(UUID().uuidString).json"
     let config = ResolvedEventFileConfig(enabled: true, path: tmpPath, priority: Set(["process.error", "process.exit"]), sessionKey: "main")
     let writer = EventFileWriter(config: config)
     let bus = EventBus()
@@ -2829,13 +2829,13 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     #expect(writer.isActive == true)
 
     // Publish a high-priority event
-    bus.publish(AgentViewEvent(type: "process.error", pid: 12345, details: ["error": AnyCodable("build failed")]))
+    bus.publish(CUAEvent(type: "process.error", pid: 12345, details: ["error": AnyCodable("build failed")]))
 
     // Read and verify the file
     let data = try Data(contentsOf: URL(fileURLWithPath: tmpPath))
     let payload = try JSONDecoder().decode(EventFilePayload.self, from: data)
 
-    #expect(payload.type == "agentview.process.error")
+    #expect(payload.type == "cua.process.error")
     #expect(payload.deliver.sessionKey == "main")
     #expect(payload.data["pid"]?.value as? Int == 12345)
     #expect(payload.data["error"]?.value as? String == "build failed")
@@ -2846,14 +2846,14 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func eventFileWriterIgnoresLowPriorityEvent() {
-    let tmpPath = NSTemporaryDirectory() + "agentview-test-event-\(UUID().uuidString).json"
+    let tmpPath = NSTemporaryDirectory() + "cua-test-event-\(UUID().uuidString).json"
     let config = ResolvedEventFileConfig(enabled: true, path: tmpPath, priority: Set(["process.error"]), sessionKey: "main")
     let writer = EventFileWriter(config: config)
     let bus = EventBus()
     writer.start(eventBus: bus)
 
     // Publish a non-priority event
-    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
+    bus.publish(CUAEvent(type: "app.launched", app: "Safari"))
 
     #expect(FileManager.default.fileExists(atPath: tmpPath) == false)
 
@@ -2862,23 +2862,23 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func eventFileWriterOverwritesOnNewEvent() throws {
-    let tmpPath = NSTemporaryDirectory() + "agentview-test-event-\(UUID().uuidString).json"
+    let tmpPath = NSTemporaryDirectory() + "cua-test-event-\(UUID().uuidString).json"
     let config = ResolvedEventFileConfig(enabled: true, path: tmpPath, priority: Set(["process.error", "process.exit"]), sessionKey: "main")
     let writer = EventFileWriter(config: config)
     let bus = EventBus()
     writer.start(eventBus: bus)
 
     // First event
-    bus.publish(AgentViewEvent(type: "process.error", pid: 100, details: ["error": AnyCodable("first error")]))
+    bus.publish(CUAEvent(type: "process.error", pid: 100, details: ["error": AnyCodable("first error")]))
 
     // Second event should overwrite
-    bus.publish(AgentViewEvent(type: "process.exit", pid: 200, details: ["exit_code": AnyCodable(1)]))
+    bus.publish(CUAEvent(type: "process.exit", pid: 200, details: ["exit_code": AnyCodable(1)]))
 
     let data = try Data(contentsOf: URL(fileURLWithPath: tmpPath))
     let payload = try JSONDecoder().decode(EventFilePayload.self, from: data)
 
     // Should contain the latest event
-    #expect(payload.type == "agentview.process.exit")
+    #expect(payload.type == "cua.process.exit")
     #expect(payload.data["pid"]?.value as? Int == 200)
 
     writer.stop()
@@ -2887,7 +2887,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 
 @Test func eventFilePayloadEncoding() throws {
     let payload = EventFilePayload(
-        type: "agentview.process.error",
+        type: "cua.process.error",
         timestamp: "2026-02-18T19:30:00Z",
         data: [
             "pid": AnyCodable(12345),
@@ -2903,7 +2903,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     let data = try encoder.encode(payload)
     let json = String(data: data, encoding: .utf8)!
 
-    #expect(json.contains("agentview.process.error"))
+    #expect(json.contains("cua.process.error"))
     #expect(json.contains("sessionKey"))
     #expect(json.contains("main"))
     #expect(json.contains("2026-02-18T19:30:00Z"))
@@ -2911,7 +2911,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 
 @Test func eventFilePayloadCodableRoundTrip() throws {
     let payload = EventFilePayload(
-        type: "agentview.process.group.state_change",
+        type: "cua.process.group.state_change",
         timestamp: "2026-02-18T20:00:00Z",
         data: [
             "pid": AnyCodable(99999),
@@ -2924,7 +2924,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     let data = try JSONEncoder().encode(payload)
     let decoded = try JSONDecoder().decode(EventFilePayload.self, from: data)
 
-    #expect(decoded.type == "agentview.process.group.state_change")
+    #expect(decoded.type == "cua.process.group.state_change")
     #expect(decoded.deliver.sessionKey == "main")
     #expect(decoded.data["pid"]?.value as? Int == 99999)
 }
@@ -3121,7 +3121,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupReporterFileOutput() throws {
-    let tmpDir = NSTemporaryDirectory() + "agentview-test-reporter-\(UUID().uuidString)"
+    let tmpDir = NSTemporaryDirectory() + "cua-test-reporter-\(UUID().uuidString)"
     let outputPath = tmpDir + "/milestones.ndjson"
 
     let bus = EventBus()
@@ -3139,7 +3139,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     group.add(pid: 88888, label: "Test worker")
 
     // Simulate building event -> state change from STARTING to BUILDING
-    bus.publish(AgentViewEvent(type: "process.tool_start", pid: 88888, details: ["tool": AnyCodable("Write")]))
+    bus.publish(CUAEvent(type: "process.tool_start", pid: 88888, details: ["tool": AnyCodable("Write")]))
 
     // Give event processing a moment
     Thread.sleep(forTimeInterval: 0.1)
@@ -3168,7 +3168,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupReporterCompletionCallback() throws {
-    let tmpDir = NSTemporaryDirectory() + "agentview-test-reporter-cb-\(UUID().uuidString)"
+    let tmpDir = NSTemporaryDirectory() + "cua-test-reporter-cb-\(UUID().uuidString)"
     let groupFilePath = tmpDir + "/process-groups.json"
 
     let bus = EventBus()
@@ -3184,7 +3184,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     group.add(pid: 77777, label: "Finisher")
 
     // Trigger exit -> DONE state
-    bus.publish(AgentViewEvent(type: "process.exit", pid: 77777, details: ["exit_code": AnyCodable(0)]))
+    bus.publish(CUAEvent(type: "process.exit", pid: 77777, details: ["exit_code": AnyCodable(0)]))
 
     Thread.sleep(forTimeInterval: 0.1)
 
@@ -3197,7 +3197,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupReporterIgnoresUnrelatedEvents() throws {
-    let tmpDir = NSTemporaryDirectory() + "agentview-test-reporter-unr-\(UUID().uuidString)"
+    let tmpDir = NSTemporaryDirectory() + "cua-test-reporter-unr-\(UUID().uuidString)"
     let outputPath = tmpDir + "/milestones.ndjson"
 
     let bus = EventBus()
@@ -3205,7 +3205,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     reporter.start(eventBus: bus, activePIDs: Set([Int32(66666)]))
 
     // Publish a non-state-change event — should not produce output
-    bus.publish(AgentViewEvent(type: "process.tool_start", pid: 66666, details: ["tool": AnyCodable("Write")]))
+    bus.publish(CUAEvent(type: "process.tool_start", pid: 66666, details: ["tool": AnyCodable("Write")]))
 
     Thread.sleep(forTimeInterval: 0.1)
 
@@ -3217,14 +3217,14 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func processGroupConfigCodableRoundTrip() throws {
-    let reporterConfig = ProcessGroupConfig.ReporterConfig(defaultOutput: "~/.agentview/group-updates.ndjson")
+    let reporterConfig = ProcessGroupConfig.ReporterConfig(defaultOutput: "~/.cua/group-updates.ndjson")
     let pgConfig = ProcessGroupConfig(reporter: reporterConfig)
-    let config = AgentViewConfig(processGroup: pgConfig)
+    let config = CUAConfig(processGroup: pgConfig)
 
     let data = try JSONEncoder().encode(config)
-    let decoded = try JSONDecoder().decode(AgentViewConfig.self, from: data)
+    let decoded = try JSONDecoder().decode(CUAConfig.self, from: data)
 
-    #expect(decoded.processGroup?.reporter?.defaultOutput == "~/.agentview/group-updates.ndjson")
+    #expect(decoded.processGroup?.reporter?.defaultOutput == "~/.cua/group-updates.ndjson")
 }
 
 @Test func processGroupConfigInFullConfig() throws {
@@ -3232,14 +3232,14 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     {
         "process_group": {
             "reporter": {
-                "default_output": "~/.agentview/group-updates.ndjson"
+                "default_output": "~/.cua/group-updates.ndjson"
             }
         }
     }
     """
     let data = json.data(using: .utf8)!
-    let config = try JSONDecoder().decode(AgentViewConfig.self, from: data)
-    #expect(config.processGroup?.reporter?.defaultOutput == "~/.agentview/group-updates.ndjson")
+    let config = try JSONDecoder().decode(CUAConfig.self, from: data)
+    #expect(config.processGroup?.reporter?.defaultOutput == "~/.cua/group-updates.ndjson")
 }
 
 @Test func milestoneEventAllCases() {

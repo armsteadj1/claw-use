@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "AgentView",
+    name: "ClawUse",
     platforms: [.macOS(.v15)],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
@@ -10,33 +10,33 @@ let package = Package(
     targets: [
         // Shared business logic library
         .target(
-            name: "AgentViewCore",
-            path: "Sources/AgentViewCore",
+            name: "CUACore",
+            path: "Sources/CUACore",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // CLI thin client
         .executableTarget(
-            name: "agentview",
+            name: "cua",
             dependencies: [
-                "AgentViewCore",
+                "CUACore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
-            path: "Sources/AgentView",
+            path: "Sources/CUA",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // Daemon
         .executableTarget(
-            name: "agentviewd",
+            name: "cuad",
             dependencies: [
-                "AgentViewCore",
+                "CUACore",
             ],
-            path: "Sources/AgentViewDaemon",
+            path: "Sources/CUADaemon",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(
-            name: "AgentViewTests",
-            dependencies: ["AgentViewCore"],
-            path: "Tests/AgentViewTests",
+            name: "CUATests",
+            dependencies: ["CUACore"],
+            path: "Tests/CUATests",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

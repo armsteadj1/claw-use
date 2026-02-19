@@ -112,9 +112,9 @@ public final class WebhookRateLimiter {
 
 // MARK: - Event Message Formatter
 
-/// Generates human-readable messages from AgentViewEvents
+/// Generates human-readable messages from CUAEvents
 public struct EventMessageFormatter {
-    public static func format(_ event: AgentViewEvent) -> String {
+    public static func format(_ event: CUAEvent) -> String {
         let details = event.details
         switch event.type {
         case "process.exit":
@@ -158,12 +158,12 @@ public struct EventMessageFormatter {
         }
     }
 
-    public static func formatBatch(_ events: [AgentViewEvent]) -> String {
+    public static func formatBatch(_ events: [CUAEvent]) -> String {
         if events.count == 1 {
             return format(events[0])
         }
         let summaries = events.map { format($0) }
-        return "AgentView batch (\(events.count) events): \(summaries.joined(separator: "; "))"
+        return "cua batch (\(events.count) events): \(summaries.joined(separator: "; "))"
     }
 }
 
@@ -177,10 +177,10 @@ public final class WebhookDelivery {
     private let lock = NSLock()
 
     /// Pending events accumulated during cooldown
-    private var pendingEvents: [AgentViewEvent] = []
+    private var pendingEvents: [CUAEvent] = []
     /// Timer for flushing pending events after cooldown
     private var flushTimer: DispatchWorkItem?
-    private let deliveryQueue = DispatchQueue(label: "agentview.webhook.delivery")
+    private let deliveryQueue = DispatchQueue(label: "cua.webhook.delivery")
 
     /// EventBus subscription ID
     private var subscriptionId: String?
@@ -260,7 +260,7 @@ public final class WebhookDelivery {
 
     // MARK: - Event Handling
 
-    private func handleEvent(_ event: AgentViewEvent) {
+    private func handleEvent(_ event: CUAEvent) {
         if config.verbose {
             logWebhook("event received: \(event.type)")
         }
@@ -319,7 +319,7 @@ public final class WebhookDelivery {
 
     // MARK: - HTTP Delivery
 
-    private func deliverBatch(_ events: [AgentViewEvent]) {
+    private func deliverBatch(_ events: [CUAEvent]) {
         let message = EventMessageFormatter.formatBatch(events)
         var payload = config.meta
         payload["message"] = AnyCodable(message)

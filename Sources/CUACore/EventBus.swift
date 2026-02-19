@@ -4,8 +4,8 @@ import Foundation
 
 // MARK: - Event Model
 
-/// An event from AgentView's monitoring system
-public struct AgentViewEvent: Codable {
+/// An event from CUA's monitoring system
+public struct CUAEvent: Codable {
     public let timestamp: String
     public let type: String
     public let app: String?
@@ -25,7 +25,7 @@ public struct AgentViewEvent: Codable {
 
 // MARK: - Event Types
 
-public enum AgentViewEventType: String, CaseIterable {
+public enum CUAEventType: String, CaseIterable {
     // App lifecycle
     case appLaunched = "app.launched"
     case appTerminated = "app.terminated"
@@ -63,9 +63,9 @@ public struct EventSubscription {
     public let id: String
     public let appFilter: String?
     public let typeFilters: Set<String>?
-    public let callback: (AgentViewEvent) -> Void
+    public let callback: (CUAEvent) -> Void
 
-    public init(id: String, appFilter: String? = nil, typeFilters: Set<String>? = nil, callback: @escaping (AgentViewEvent) -> Void) {
+    public init(id: String, appFilter: String? = nil, typeFilters: Set<String>? = nil, callback: @escaping (CUAEvent) -> Void) {
         self.id = id
         self.appFilter = appFilter
         self.typeFilters = typeFilters
@@ -73,7 +73,7 @@ public struct EventSubscription {
     }
 
     /// Check if an event passes this subscription's filters
-    func matches(_ event: AgentViewEvent) -> Bool {
+    func matches(_ event: CUAEvent) -> Bool {
         // App filter
         if let appFilter = appFilter {
             let filter = appFilter.lowercased()
@@ -101,7 +101,7 @@ public final class EventBus {
     private let lock = NSLock()
 
     /// Recent events (last 100)
-    private var recentEvents: [AgentViewEvent] = []
+    private var recentEvents: [CUAEvent] = []
     private let maxRecentEvents = 100
 
     /// Active subscribers
@@ -141,7 +141,7 @@ public final class EventBus {
     // MARK: - Event Publishing
 
     /// Publish an event to all matching subscribers and store in recent
-    public func publish(_ event: AgentViewEvent) {
+    public func publish(_ event: CUAEvent) {
         lock.lock()
         recentEvents.append(event)
         if recentEvents.count > maxRecentEvents {
@@ -161,7 +161,7 @@ public final class EventBus {
 
     /// Subscribe to events with optional filters. Returns subscription ID.
     @discardableResult
-    public func subscribe(appFilter: String? = nil, typeFilters: Set<String>? = nil, callback: @escaping (AgentViewEvent) -> Void) -> String {
+    public func subscribe(appFilter: String? = nil, typeFilters: Set<String>? = nil, callback: @escaping (CUAEvent) -> Void) -> String {
         lock.lock()
         let id = "sub_\(nextSubscriberId)"
         nextSubscriberId += 1
@@ -178,7 +178,7 @@ public final class EventBus {
     }
 
     /// Get recent events, optionally filtered
-    public func getRecentEvents(appFilter: String? = nil, typeFilters: Set<String>? = nil, limit: Int? = nil) -> [AgentViewEvent] {
+    public func getRecentEvents(appFilter: String? = nil, typeFilters: Set<String>? = nil, limit: Int? = nil) -> [CUAEvent] {
         lock.lock()
         var events = recentEvents
         lock.unlock()
@@ -266,8 +266,8 @@ public final class EventBus {
 
     @objc private func appDidLaunch(_ notification: Notification) {
         guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-        let event = AgentViewEvent(
-            type: AgentViewEventType.appLaunched.rawValue,
+        let event = CUAEvent(
+            type: CUAEventType.appLaunched.rawValue,
             app: app.localizedName,
             bundleId: app.bundleIdentifier,
             pid: app.processIdentifier
@@ -279,8 +279,8 @@ public final class EventBus {
 
     @objc private func appDidTerminate(_ notification: Notification) {
         guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-        let event = AgentViewEvent(
-            type: AgentViewEventType.appTerminated.rawValue,
+        let event = CUAEvent(
+            type: CUAEventType.appTerminated.rawValue,
             app: app.localizedName,
             bundleId: app.bundleIdentifier,
             pid: app.processIdentifier
@@ -292,8 +292,8 @@ public final class EventBus {
 
     @objc private func appDidActivate(_ notification: Notification) {
         guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-        let event = AgentViewEvent(
-            type: AgentViewEventType.appActivated.rawValue,
+        let event = CUAEvent(
+            type: CUAEventType.appActivated.rawValue,
             app: app.localizedName,
             bundleId: app.bundleIdentifier,
             pid: app.processIdentifier
@@ -303,8 +303,8 @@ public final class EventBus {
 
     @objc private func appDidDeactivate(_ notification: Notification) {
         guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-        let event = AgentViewEvent(
-            type: AgentViewEventType.appDeactivated.rawValue,
+        let event = CUAEvent(
+            type: CUAEventType.appDeactivated.rawValue,
             app: app.localizedName,
             bundleId: app.bundleIdentifier,
             pid: app.processIdentifier
@@ -318,14 +318,14 @@ public final class EventBus {
     public func publishScreenEvent(_ eventName: String, state: ScreenState.State) {
         let type: String
         switch eventName {
-        case "screen_locked": type = AgentViewEventType.screenLocked.rawValue
-        case "screen_unlocked": type = AgentViewEventType.screenUnlocked.rawValue
-        case "display_sleep": type = AgentViewEventType.displaySleep.rawValue
-        case "display_wake": type = AgentViewEventType.displayWake.rawValue
+        case "screen_locked": type = CUAEventType.screenLocked.rawValue
+        case "screen_unlocked": type = CUAEventType.screenUnlocked.rawValue
+        case "display_sleep": type = CUAEventType.displaySleep.rawValue
+        case "display_wake": type = CUAEventType.displayWake.rawValue
         default: type = "screen.\(eventName)"
         }
 
-        let event = AgentViewEvent(
+        let event = CUAEvent(
             type: type,
             details: [
                 "screen": AnyCodable(state.screen),
@@ -406,13 +406,13 @@ public final class EventBus {
         let type: String
         switch notification {
         case kAXFocusedUIElementChangedNotification:
-            type = AgentViewEventType.focusChanged.rawValue
+            type = CUAEventType.focusChanged.rawValue
         case kAXValueChangedNotification:
-            type = AgentViewEventType.valueChanged.rawValue
+            type = CUAEventType.valueChanged.rawValue
         case kAXWindowCreatedNotification:
-            type = AgentViewEventType.windowCreated.rawValue
+            type = CUAEventType.windowCreated.rawValue
         case kAXUIElementDestroyedNotification:
-            type = AgentViewEventType.elementDestroyed.rawValue
+            type = CUAEventType.elementDestroyed.rawValue
         default:
             type = "ax.\(notification)"
         }
@@ -435,7 +435,7 @@ public final class EventBus {
         if let role = role { details["role"] = AnyCodable(role) }
         if let title = title { details["title"] = AnyCodable(title) }
 
-        let event = AgentViewEvent(
+        let event = CUAEvent(
             type: type,
             app: appName,
             bundleId: bundleId,

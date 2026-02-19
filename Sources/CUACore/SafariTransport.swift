@@ -321,8 +321,8 @@ public final class SafariTransport: Transport {
 
         // Write JS to temp file to avoid AppleScript string escaping hell
         let pid = ProcessInfo.processInfo.processIdentifier
-        let tmpJSFile = "/tmp/agentview-js-\(pid).js"
-        let tmpScriptFile = "/tmp/agentview-scpt-\(pid).applescript"
+        let tmpJSFile = "/tmp/cua-js-\(pid).js"
+        let tmpScriptFile = "/tmp/cua-scpt-\(pid).applescript"
         do {
             try expr.write(toFile: tmpJSFile, atomically: true, encoding: .utf8)
             let scpt = """
@@ -335,7 +335,7 @@ public final class SafariTransport: Transport {
                     end if
                     return jsResult as text
                 on error errMsg
-                    return "AGENTVIEW_JS_ERROR:" & errMsg
+                    return "CUA_JS_ERROR:" & errMsg
                 end try
             end tell
             """

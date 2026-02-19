@@ -51,7 +51,7 @@ public enum ScreenCapture {
         // Build output path
         let safeName = owner.lowercased().replacingOccurrences(of: " ", with: "-")
         let timestamp = Int(Date().timeIntervalSince1970)
-        let path = outputPath ?? "/tmp/agentview-screenshot-\(safeName)-\(timestamp).png"
+        let path = outputPath ?? "/tmp/cua-screenshot-\(safeName)-\(timestamp).png"
 
         // Use macOS screencapture CLI to capture the window by ID
         let process = Process()

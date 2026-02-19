@@ -1,16 +1,16 @@
-# AgentView
+# claw-use
 
-**Give your AI agent eyes and hands on macOS.**
+**Allowing claws to make better use of any application.**
 
-AgentView is a persistent daemon that lets agents interact with any running macOS application — browsers, native apps, even locked screens. One CLI, every app, always on.
+claw-use is a persistent daemon that lets agents interact with any running macOS application — browsers, native apps, even locked screens. One CLI (`cua`), every app, always on.
 
 ## The Numbers
 
-We benchmarked AgentView against the tools agents use today — browser automation (Playwright/CDP snapshots), AppleScript via `exec`, and HTTP fetch. Same page, same tasks, real measurements.
+We benchmarked cua against the tools agents use today — browser automation (Playwright/CDP snapshots), AppleScript via `exec`, and HTTP fetch. Same page, same tasks, real measurements.
 
 ### Speed
 
-| Task | Today | AgentView | Improvement |
+| Task | Today | cua | Improvement |
 |------|-------|-----------|-------------|
 | List running apps | 190ms (AppleScript) | **27ms** | 7x faster |
 | Web page snapshot | ~1,200ms (browser tool) | **235ms** | 5x faster |
@@ -25,8 +25,8 @@ Same page (IANA Example Domains), same information:
 | Format | Bytes | Relative |
 |--------|-------|----------|
 | Browser tool (ARIA tree) | 3,318 | 5.7x more |
-| AgentView JSON | 2,526 | 4.4x more |
-| **AgentView compact** | **577** | **1x** |
+| cua JSON | 2,526 | 4.4x more |
+| **cua compact** | **577** | **1x** |
 
 The compact snapshot contains everything an agent needs — links with URLs, headings, page type, word count. The browser tool returns the entire DOM tree including footer cells, ARIA landmarks, and nested role annotations.
 
@@ -36,17 +36,17 @@ At 10 snapshots per task, that's **~27,000 bytes saved per task** — real money
 
 **"Read a page and click something"**
 - Today: `snapshot` → parse → `act click` = **3 tool calls**, ~4,000+ bytes
-- AgentView: `pipe safari click --match "Sign in"` = **1 tool call**, ~50 bytes back
+- cua: `pipe safari click --match "Sign in"` = **1 tool call**, ~50 bytes back
 
 **"Fill a login form"**
 - Today: `snapshot` → `fill email` → `fill password` → `click submit` = **4 calls**
-- AgentView: 3× `pipe` commands = **3 calls**, each self-contained (no snapshot step needed)
+- cua: 3× `pipe` commands = **3 calls**, each self-contained (no snapshot step needed)
 
 Fewer tool calls = fewer LLM round-trips = faster completion = lower cost.
 
 ## What You Can't Do Today
 
-| Capability | Current Tools | AgentView |
+| Capability | Current Tools | cua |
 |-----------|---------------|-----------|
 | 🔒 Locked screen | Dead — browser tools need a display | Safari transport works via AppleScript |
 | 📱 Native apps (Notes, Calendar, Numbers) | No tool covers this | Full AX UI tree with refs and actions |
@@ -58,14 +58,14 @@ Fewer tool calls = fewer LLM round-trips = faster completion = lower cost.
 
 ```bash
 # What's running?
-agentview list
+cua list
 # → Safari, Obsidian, Notes, Calendar, Numbers...
 
 # What's on screen?
-agentview snapshot "Safari"
+cua snapshot "Safari"
 # → Enriched UI: 31 elements, buttons, tabs, text fields with refs (e1, e2...)
 
-agentview pipe safari click --match "Sign in"
+cua pipe safari click --match "Sign in"
 # ✅ clicked "Sign in" (score: 100)
 
 # All of this works with the screen locked 🔒
@@ -73,13 +73,13 @@ agentview pipe safari click --match "Sign in"
 
 ## Sentinels
 
-AgentView doesn't just respond to commands — it watches.
+cua doesn't just respond to commands — it watches.
 
 The **event bus** monitors app lifecycle, UI changes, screen state, and foreground switches. When something happens, it wakes your agent via webhook instead of your agent polling "did anything change?"
 
 ```bash
 # Stream events as JSONL
-agentview watch --app Safari --types value_changed,title_changed
+cua watch --app Safari --types value_changed,title_changed
 
 # Configure webhooks — your agent gets called when something needs attention:
 # - A build finishes in Xcode
@@ -93,8 +93,8 @@ Think of Sentinels as your agent's peripheral vision. Instead of burning tokens 
 Screenshot any app and feed it to a vision model. "What does the screen look like right now?"
 
 ```bash
-agentview screenshot "Xcode"
-# → /tmp/agentview-screenshot-xcode-1234567.png (feed to GPT-4V, Claude, etc.)
+cua screenshot "Xcode"
+# → /tmp/cua-screenshot-xcode-1234567.png (feed to GPT-4V, Claude, etc.)
 ```
 
 ### 🔓 Permission & Dialog Handler
@@ -104,7 +104,7 @@ Default output is **compact** — optimized for agent token budgets. Use `--form
 
 ## How It Works
 
-AgentView runs a persistent daemon (`agentviewd`) that maintains connections to every app through four transport layers:
+cua runs a persistent daemon (`cuad`) that maintains connections to every app through four transport layers:
 
 - **Accessibility (AX)** — richest data: roles, labels, values, actions for any native app
 - **Chrome DevTools Protocol** — persistent WebSocket to Electron apps, 7ms eval
@@ -124,11 +124,11 @@ cd agentview
 swift build -c release
 
 # Install binaries
-cp .build/release/agentview ~/.local/bin/
-cp .build/release/agentviewd ~/.local/bin/
+cp .build/release/cua ~/.local/bin/
+cp .build/release/cuad ~/.local/bin/
 
 # Start the daemon
-agentview daemon start
+cua daemon start
 
 # Grant Accessibility permission when prompted
 # For Safari: enable Develop → Allow JavaScript from Apple Events
@@ -136,7 +136,7 @@ agentview daemon start
 
 ## For Agent Developers
 
-AgentView is designed to be called from AI agent tool loops. The JSON output is structured for LLM consumption:
+cua is designed to be called from AI agent tool loops. The JSON output is structured for LLM consumption:
 
 - **Refs** (`e1`, `e2`, `w1`) are stable handles to UI elements
 - **Fuzzy matching** (`--match "Sign In"`) means your agent doesn't need exact selectors
@@ -147,19 +147,19 @@ AgentView is designed to be called from AI agent tool loops. The JSON output is 
 ### Example: OpenClaw Skill
 
 ```yaml
-# agentview skill for OpenClaw agents
-name: agentview
-description: See and interact with any macOS app via AgentView CLI
+# cua skill for OpenClaw agents
+name: cua
+description: See and interact with any macOS app via cua CLI
 ```
 
 ```markdown
 ## Available Commands
-- `agentview list` — see what's running
-- `agentview snapshot <app>` — get UI state with refs
-- `agentview act <app> click --ref e3` — click element e3
-- `agentview web navigate <url>` — open a URL in Safari
-- `agentview web fill "email" --value "..."` — fill a form field
-- `agentview screenshot <app>` — capture window screenshot
+- `cua list` — see what's running
+- `cua snapshot <app>` — get UI state with refs
+- `cua act <app> click --ref e3` — click element e3
+- `cua web navigate <url>` — open a URL in Safari
+- `cua web fill "email" --value "..."` — fill a form field
+- `cua screenshot <app>` — capture window screenshot
 
 ## Tips
 - Use `pipe` for one-shot interactions (faster than snapshot + act)
@@ -171,7 +171,7 @@ description: See and interact with any macOS app via AgentView CLI
 
 - [x] Phase 1: Daemon + UDS + persistent CDP + screen state
 - [x] Phase 2: Self-healing router + transport fallback
-- [x] Phase 3: Snapshot cache + event bus + watch stream  
+- [x] Phase 3: Snapshot cache + event bus + watch stream
 - [x] Phase 4: Safari browser control + semantic page analysis
 - [ ] Phase 5: Transport-aware enrichers + OCR fallback
 - [ ] Chrome DevTools integration (remote debugging)

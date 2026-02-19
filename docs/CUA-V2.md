@@ -1,4 +1,4 @@
-# AgentView v2 — The Universal UI Layer
+# cua v2 — The Universal UI Layer
 
 **Vision**: One daemon, every app, every transport, always on. The agent's eyes and hands on macOS.
 
@@ -7,12 +7,12 @@
 ```
 ┌─────────────────────────────────────────────┐
 │                  Agent (Hedwig, sub-agents)  │
-│            agentview <cmd> (CLI client)      │
+│            cua <cmd> (CLI client)      │
 └──────────────────┬──────────────────────────┘
-                   │ UDS socket (~/.agentview/sock)
+                   │ UDS socket (~/.cua/sock)
                    ▼
 ┌─────────────────────────────────────────────┐
-│              agentviewd (daemon)             │
+│              cuad (daemon)             │
 │                                             │
 │  ┌─────────┐  ┌──────┐  ┌──────────────┐   │
 │  │ State   │  │Router│  │ Event Bus    │   │
@@ -35,11 +35,11 @@
 
 ## Components
 
-### 1. Daemon (`agentviewd`)
-- Long-running process, launches at login (or on first `agentview` call)
-- Listens on UDS socket: `~/.agentview/sock`
+### 1. Daemon (`cuad`)
+- Long-running process, launches at login (or on first `cua` call)
+- Listens on UDS socket: `~/.cua/sock`
 - JSON-RPC protocol over UDS (simple request/response + event push)
-- CLI becomes a thin client: `agentview snapshot "Notes"` → sends JSON-RPC to daemon → returns result
+- CLI becomes a thin client: `cua snapshot "Notes"` → sends JSON-RPC to daemon → returns result
 - Auto-starts if not running when CLI is invoked
 
 ### 2. Transport Layer (self-healing, auto-routing)
@@ -102,7 +102,7 @@ For each action:
 - AX notifications (kAXValueChanged, kAXFocusedUIElementChanged, etc.)
 - Screen state changes (lock/unlock, display sleep/wake)
 - Events pushed to connected clients via UDS
-- CLI can long-poll: `agentview watch` → streams events as JSON lines
+- CLI can long-poll: `cua watch` → streams events as JSON lines
 
 ### 5. Semantic Enrichment v2
 - Per-app enrichers become **transport-aware**:
@@ -118,16 +118,16 @@ For each action:
 - Output is always high-level semantic, never raw tree
 
 ### 6. Web Browsing (the killer feature)
-AgentView becomes the universal browser driver:
+cua becomes the universal browser driver:
 
 ```
-agentview web navigate "https://example.com"     # open URL in default browser
-agentview web snapshot                            # semantic page snapshot
-agentview web click --match "Sign In"             # fuzzy click
-agentview web fill --match "email" --value "..."  # fuzzy fill  
-agentview web extract                             # main content as markdown
-agentview web tabs                                # list all tabs
-agentview web tab --match "GitHub"                # switch to tab
+cua web navigate "https://example.com"     # open URL in default browser
+cua web snapshot                            # semantic page snapshot
+cua web click --match "Sign In"             # fuzzy click
+cua web fill --match "email" --value "..."  # fuzzy fill  
+cua web extract                             # main content as markdown
+cua web tabs                                # list all tabs
+cua web tab --match "GitHub"                # switch to tab
 ```
 
 Under the hood:
@@ -144,7 +144,7 @@ Under the hood:
 
 ### 7. Status Command
 ```
-agentview status
+cua status
 ```
 Returns:
 ```json
@@ -171,34 +171,34 @@ All commands become thin UDS clients. Daemon auto-starts if needed.
 
 ```bash
 # Daemon management
-agentview daemon start|stop|status
+cua daemon start|stop|status
 
 # Current commands (unchanged API, now via daemon)
-agentview list
-agentview snapshot <app>
-agentview act <app> <action> [--ref|--match|--expr|--value]
-agentview pipe <app> <action> --match <fuzzy> [--value]
-agentview restore <app>
+cua list
+cua snapshot <app>
+cua act <app> <action> [--ref|--match|--expr|--value]
+cua pipe <app> <action> --match <fuzzy> [--value]
+cua restore <app>
 
 # New commands
-agentview status                    # full system status
-agentview watch [--app <name>]      # stream events as JSONL
-agentview web navigate <url>        # browser control
-agentview web snapshot              # semantic page snapshot  
-agentview web click --match <text>  # fuzzy click on page
-agentview web fill --match <text> --value <val>
-agentview web extract               # page content as markdown
-agentview web tabs                  # list browser tabs
-agentview web tab --match <text>    # switch tab
+cua status                    # full system status
+cua watch [--app <name>]      # stream events as JSONL
+cua web navigate <url>        # browser control
+cua web snapshot              # semantic page snapshot  
+cua web click --match <text>  # fuzzy click on page
+cua web fill --match <text> --value <val>
+cua web extract               # page content as markdown
+cua web tabs                  # list browser tabs
+cua web tab --match <text>    # switch tab
 ```
 
 ## Implementation Phases
 
 ### Phase 1: Daemon + UDS (foundation)
-- [ ] `agentviewd` daemon with UDS socket + JSON-RPC
+- [ ] `cuad` daemon with UDS socket + JSON-RPC
 - [ ] CLI thin client (all existing commands route through daemon)
 - [ ] Auto-start daemon on first CLI call
-- [ ] `agentview daemon start|stop|status`
+- [ ] `cua daemon start|stop|status`
 - [ ] Persistent CDP connections (Obsidian, VS Code)
 - [ ] Screen state detection (`CGSessionCopyCurrentDictionary`)
 
@@ -207,7 +207,7 @@ agentview web tab --match <text>    # switch tab
 - [ ] CDP auto-reconnect with exponential backoff
 - [ ] AppleScript retry logic (kill hung + retry once)
 - [ ] Transport preference per app (configurable)
-- [ ] `agentview status` command with transport health
+- [ ] `cua status` command with transport health
 
 ### Phase 3: State Cache + Events
 - [ ] In-memory snapshot cache with TTL
@@ -215,12 +215,12 @@ agentview web tab --match <text>    # switch tab
 - [ ] NSWorkspace event monitoring (app lifecycle)
 - [ ] AX notification observers (focus, value changes)
 - [ ] Screen lock/unlock detection
-- [ ] `agentview watch` event stream
+- [ ] `cua watch` event stream
 
 ### Phase 4: Safari + Web Browsing
 - [ ] Safari AppleScript transport (tabs, navigation, `do JavaScript`)
 - [ ] Semantic page type detection (login, search, article, table, generic)
-- [ ] `agentview web` command family
+- [ ] `cua web` command family
 - [ ] Page content extraction as markdown
 - [ ] Fuzzy element matching on web pages (via injected JS)
 - [ ] Form detection + auto-fill support
@@ -257,11 +257,11 @@ agentview web tab --match <text>    # switch tab
 ## File Structure
 ```
 Sources/
-  AgentView/           # CLI (thin client)
+  CUA/           # CLI (thin client)
     main.swift
     Client.swift       # UDS client
     Commands/          # All CLI commands
-  AgentViewDaemon/     # Daemon
+  CUADaemon/     # Daemon
     main.swift
     Server.swift       # UDS server + JSON-RPC handler
     Router.swift       # Transport router + fallback chain

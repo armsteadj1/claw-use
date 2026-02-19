@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import AgentViewCore
+import CUACore
 
 /// JSON-RPC method router — dispatches to the appropriate handler
 /// Now uses the Transport layer with self-healing fallback chain

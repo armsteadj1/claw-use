@@ -1,18 +1,18 @@
 # Architecture
 
-AgentView is a persistent daemon + CLI that abstracts macOS UI interaction behind a unified transport layer.
+cua is a persistent daemon + CLI that abstracts macOS UI interaction behind a unified transport layer.
 
 ## System Overview
 
 ```
 ┌─────────────────────────────────────┐
 │          AI Agent (any LLM)         │
-│        agentview <cmd> (CLI)        │
+│        cua <cmd> (CLI)        │
 └──────────────┬──────────────────────┘
-               │ UDS socket (~/.agentview/sock)
+               │ UDS socket (~/.cua/sock)
                ▼
 ┌─────────────────────────────────────┐
-│         agentviewd (daemon)         │
+│         cuad (daemon)         │
 │                                     │
 │  Router ─── Cache ─── Event Bus     │
 │    │                      │         │
@@ -85,11 +85,11 @@ For each action:
 ### Wake Client
 - Fires webhook to OpenClaw gateway on screen events
 - Agent wakes up when screen unlocks, app activates, etc.
-- Writes events to `~/.agentview/pending-event.json`
+- Writes events to `~/.cua/pending-event.json`
 
 ## JSON-RPC Protocol
 
-All communication over UDS socket at `~/.agentview/sock` using JSON-RPC 2.0.
+All communication over UDS socket at `~/.cua/sock` using JSON-RPC 2.0.
 
 ### Methods
 | Method | Description |
@@ -125,7 +125,7 @@ All communication over UDS socket at `~/.agentview/sock` using JSON-RPC 2.0.
 
 ```
 Sources/
-  AgentViewCore/             # Shared library
+  CUACore/             # Shared library
     AXBridge.swift           # Accessibility API bridge
     AXTreeWalker.swift       # Recursive AX tree traversal
     ActionExecutor.swift     # Click, fill, focus, eval, script
@@ -141,10 +141,10 @@ Sources/
     ScreenState.swift        # Lock/display detection
     Enricher.swift           # Raw AX → semantic elements
     Enhancers/               # Per-app enrichment strategies
-  AgentView/                 # CLI (thin UDS client)
-    AgentView.swift          # All commands
+  CUA/                 # CLI (thin UDS client)
+    CUA.swift                # All commands
     Client.swift             # UDS JSON-RPC client + daemon auto-start
-  AgentViewDaemon/           # Persistent daemon
+  CUADaemon/           # Persistent daemon
     main.swift               # Entry point, component wiring
     Server.swift             # UDS server + JSON-RPC dispatch
     Router.swift             # Request routing + transport selection

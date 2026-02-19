@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import AgentViewCore
+@testable import CUACore
 
 // MARK: - Rate Limiter Tests
 
@@ -90,7 +90,7 @@ import Testing
 // MARK: - Event Message Formatter Tests
 
 @Test func formatProcessExitSuccess() {
-    let event = AgentViewEvent(
+    let event = CUAEvent(
         type: "process.exit",
         pid: 12345,
         details: [
@@ -104,7 +104,7 @@ import Testing
 }
 
 @Test func formatProcessExitFailure() {
-    let event = AgentViewEvent(
+    let event = CUAEvent(
         type: "process.exit",
         pid: 12345,
         details: [
@@ -120,7 +120,7 @@ import Testing
 }
 
 @Test func formatProcessError() {
-    let event = AgentViewEvent(
+    let event = CUAEvent(
         type: "process.error",
         pid: 100,
         details: [
@@ -133,7 +133,7 @@ import Testing
 }
 
 @Test func formatProcessIdle() {
-    let event = AgentViewEvent(
+    let event = CUAEvent(
         type: "process.idle",
         pid: 200,
         details: [
@@ -147,7 +147,7 @@ import Testing
 }
 
 @Test func formatProcessGroupStateChange() {
-    let event = AgentViewEvent(
+    let event = CUAEvent(
         type: "process.group.state_change",
         pid: 300,
         details: [
@@ -163,7 +163,7 @@ import Testing
 }
 
 @Test func formatBatchSingleEvent() {
-    let event = AgentViewEvent(type: "app.launched", app: "Xcode")
+    let event = CUAEvent(type: "app.launched", app: "Xcode")
     let msg = EventMessageFormatter.formatBatch([event])
     #expect(msg.contains("Xcode"))
     // Single event should not say "batch"
@@ -172,12 +172,12 @@ import Testing
 
 @Test func formatBatchMultipleEvents() {
     let events = [
-        AgentViewEvent(type: "process.exit", pid: 1, details: ["exit_code": AnyCodable(0)]),
-        AgentViewEvent(type: "process.error", pid: 2, details: ["error": AnyCodable("fail")]),
-        AgentViewEvent(type: "process.idle", pid: 3, details: ["idle_seconds": AnyCodable(300)]),
+        CUAEvent(type: "process.exit", pid: 1, details: ["exit_code": AnyCodable(0)]),
+        CUAEvent(type: "process.error", pid: 2, details: ["error": AnyCodable("fail")]),
+        CUAEvent(type: "process.idle", pid: 3, details: ["idle_seconds": AnyCodable(300)]),
     ]
     let msg = EventMessageFormatter.formatBatch(events)
-    #expect(msg.contains("AgentView batch (3 events)"))
+    #expect(msg.contains("cua batch (3 events)"))
 }
 
 // MARK: - WebhookDelivery Integration Tests
@@ -258,15 +258,15 @@ import Testing
 
 @Test func eventBusSubscribeAndPublish() {
     let bus = EventBus()
-    var received: [AgentViewEvent] = []
+    var received: [CUAEvent] = []
 
     bus.subscribe(typeFilters: Set(["process.*"])) { event in
         received.append(event)
     }
 
-    bus.publish(AgentViewEvent(type: "process.exit", pid: 1))
-    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
-    bus.publish(AgentViewEvent(type: "process.error", pid: 2))
+    bus.publish(CUAEvent(type: "process.exit", pid: 1))
+    bus.publish(CUAEvent(type: "app.launched", app: "Safari"))
+    bus.publish(CUAEvent(type: "process.error", pid: 2))
 
     #expect(received.count == 2)
     #expect(received[0].type == "process.exit")

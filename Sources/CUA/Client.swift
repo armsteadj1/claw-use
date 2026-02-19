@@ -1,12 +1,12 @@
 import Foundation
 import Network
-import AgentViewCore
+import CUACore
 
-/// UDS client that connects to the agentviewd daemon and sends JSON-RPC requests
+/// UDS client that connects to the cuad daemon and sends JSON-RPC requests
 struct DaemonClient {
-    static let agentviewDir = NSHomeDirectory() + "/.agentview"
-    static let socketPath = agentviewDir + "/sock"
-    static let pidFilePath = agentviewDir + "/pid"
+    static let cuaDir = NSHomeDirectory() + "/.cua"
+    static let socketPath = cuaDir + "/sock"
+    static let pidFilePath = cuaDir + "/pid"
 
     /// Send a JSON-RPC request to the daemon, return the response
     static func call(method: String, params: [String: AnyCodable]? = nil) throws -> JSONRPCResponse {
@@ -58,13 +58,13 @@ struct DaemonClient {
 
     /// Auto-start the daemon via fork+exec
     static func startDaemon() throws {
-        // Find agentviewd binary — check same dir as CLI, then PATH
+        // Find cuad binary — check same dir as CLI, then PATH
         let fm = FileManager.default
         var daemonPath = ""
 
         // 1. Next to current binary (full path)
         let currentExe = CommandLine.arguments[0]
-        let sameDir = (currentExe as NSString).deletingLastPathComponent + "/agentviewd"
+        let sameDir = (currentExe as NSString).deletingLastPathComponent + "/cuad"
         if fm.isExecutableFile(atPath: sameDir) {
             daemonPath = sameDir
         }
@@ -73,7 +73,7 @@ struct DaemonClient {
         if daemonPath.isEmpty {
             let which = Process()
             which.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-            which.arguments = ["agentviewd"]
+            which.arguments = ["cuad"]
             let pipe = Foundation.Pipe()
             which.standardOutput = pipe
             try? which.run()
@@ -88,7 +88,7 @@ struct DaemonClient {
         // 3. Common locations
         if daemonPath.isEmpty {
             let home = fm.homeDirectoryForCurrentUser.path
-            for candidate in ["\(home)/.local/bin/agentviewd", "/usr/local/bin/agentviewd"] {
+            for candidate in ["\(home)/.local/bin/cuad", "/usr/local/bin/cuad"] {
                 if fm.isExecutableFile(atPath: candidate) {
                     daemonPath = candidate
                     break
@@ -214,7 +214,7 @@ struct DaemonClient {
             }
         }
 
-        let queue = DispatchQueue(label: "agentview.stream")
+        let queue = DispatchQueue(label: "cua.stream")
         connection.start(queue: queue)
 
         // Block until disconnected or SIGINT
@@ -271,7 +271,7 @@ struct DaemonClient {
             }
         }
 
-        let queue = DispatchQueue(label: "agentview.client")
+        let queue = DispatchQueue(label: "cua.client")
         connection.start(queue: queue)
 
         let result = semaphore.wait(timeout: .now() + 30)
@@ -301,8 +301,8 @@ struct DaemonClient {
 
         var description: String {
             switch self {
-            case .daemonStartFailed: return "Failed to start agentviewd daemon"
-            case .daemonBinaryNotFound(let path): return "agentviewd not found at \(path)"
+            case .daemonStartFailed: return "Failed to start cuad daemon"
+            case .daemonBinaryNotFound(let path): return "cuad not found at \(path)"
             case .timeout: return "Daemon request timed out"
             case .emptyResponse: return "Empty response from daemon"
             }

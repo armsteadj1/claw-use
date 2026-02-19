@@ -41,16 +41,16 @@ struct WakeClient {
 
     let wakeEndpoint: String
 
-    /// Load config from ~/.agentview/config.json
+    /// Load config from ~/.cua/config.json
     static func fromConfig() -> WakeClient {
         let configPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".agentview/config.json").path
+            .appendingPathComponent(".cua/config.json").path
 
         guard FileManager.default.fileExists(atPath: configPath),
               let data = FileManager.default.contents(atPath: configPath),
               let config = try? JSONDecoder().decode(Config.self, from: data),
               let url = config.gatewayUrl, !url.isEmpty else {
-            fputs("[wake] No gateway config found at ~/.agentview/config.json — wake disabled\n", stderr)
+            fputs("[wake] No gateway config found at ~/.cua/config.json — wake disabled\n", stderr)
             return WakeClient(gatewayUrl: "", gatewayToken: "", enabled: false, wakeEndpoint: "/hooks/wake")
         }
 
@@ -116,7 +116,7 @@ struct WakeClient {
     }
 
     func appCrashed(name: String, pid: Int32) {
-        wake(text: "💥 \(name) (PID \(pid)) appears to have crashed. Consider running `agentview restore \"\(name)\"` to recover.")
+        wake(text: "💥 \(name) (PID \(pid)) appears to have crashed. Consider running `cua restore \"\(name)\"` to recover.")
     }
 
     func cdpDisconnected(port: Int) {
@@ -128,7 +128,7 @@ struct WakeClient {
     }
 
     func appLaunched(name: String, pid: Int32) {
-        wake(text: "📱 \(name) launched (PID \(pid)). New app available for AgentView control.")
+        wake(text: "📱 \(name) launched (PID \(pid)). New app available for cua control.")
     }
 
     func appTerminated(name: String) {
