@@ -130,7 +130,6 @@ public final class ProcessWatcher {
     private let eventBus: EventBus
     private var fileHandle: FileHandle?
     private var dispatchSource: DispatchSourceFileSystemObject?
-    private var procExitSource: DispatchSourceProcess?
     private var pollTimer: DispatchSourceTimer?
     private var idleTimer: DispatchSourceTimer?
     private var lastActivityTime: Date
@@ -139,6 +138,8 @@ public final class ProcessWatcher {
     private var lineBuffer = ""
     /// Exit code captured by kqueue (NOTE_EXITSTATUS), nil if not yet available
     private var kqueueExitCode: Int32?
+    /// kqueue file descriptor for process exit watching (kept open for lifetime)
+    private var kqueueFd: Int32 = -1
 
     public init(pid: Int32, logPath: String?, idleTimeout: TimeInterval = 300, eventBus: EventBus) {
         self.pid = pid
@@ -169,8 +170,10 @@ public final class ProcessWatcher {
         stopped = true
         lock.unlock()
 
-        procExitSource?.cancel()
-        procExitSource = nil
+        if kqueueFd >= 0 {
+            close(kqueueFd)
+            kqueueFd = -1
+        }
         dispatchSource?.cancel()
         dispatchSource = nil
         pollTimer?.cancel()
@@ -301,47 +304,14 @@ public final class ProcessWatcher {
 
     // MARK: - kqueue Exit Watch (reliable exit code for any process)
 
-    /// Use macOS kqueue EVFILT_PROC with NOTE_EXIT | NOTE_EXITSTATUS to get
-    /// the real exit status of any process — not just children.
-    /// This replaces waitpid() which only works for child processes.
+    /// Register a raw kqueue with EVFILT_PROC + NOTE_EXIT + NOTE_EXITSTATUS
+    /// at watch-start time (while the process is alive). A background thread
+    /// blocks on kevent() and captures the exit status when the process dies.
+    /// This works for ANY process on macOS, not just children.
     private func startKqueueExitWatch() {
-        let source = DispatchSource.makeProcessSource(
-            identifier: pid,
-            eventMask: .exit,
-            queue: DispatchQueue.global(qos: .utility)
-        )
-
-        source.setEventHandler { [weak self] in
-            guard let self = self, self.isActive else { return }
-            // DispatchSource.makeProcessSource uses NOTE_EXIT under the hood.
-            // To get the actual exit status we need NOTE_EXITSTATUS which
-            // DispatchSource doesn't expose directly. Use the kqueue fd.
-            let exitCode = self.readKqueueExitStatus() ?? self.waitForExitCode()
-
-            self.lock.lock()
-            self.kqueueExitCode = exitCode
-            self.lock.unlock()
-
-            let event = CUAEvent(
-                type: ProcessEventType.exit.rawValue,
-                pid: self.pid,
-                details: ["exit_code": AnyCodable(exitCode)]
-            )
-            self.eventBus.publish(event)
-            self.stop()
-        }
-
-        source.setCancelHandler { /* nothing */ }
-        self.procExitSource = source
-        source.resume()
-    }
-
-    /// Use raw kqueue to read exit status with NOTE_EXITSTATUS.
-    /// Returns the exit code (0-255) or nil if unable to determine.
-    private func readKqueueExitStatus() -> Int32? {
         let kq = kqueue()
-        guard kq >= 0 else { return nil }
-        defer { close(kq) }
+        guard kq >= 0 else { return }
+        self.kqueueFd = kq
 
         var change = kevent(
             ident: UInt(pid),
@@ -352,24 +322,51 @@ public final class ProcessWatcher {
             udata: nil
         )
 
-        // Register — if the process is already dead this may fail, that's OK
-        let reg = kevent(kq, &change, 1, nil, 0, nil)
-        if reg == -1 { return nil }
+        // Register while process is alive
+        let reg = Darwin.kevent(kq, &change, 1, nil, 0, nil)
+        if reg == -1 {
+            close(kq)
+            self.kqueueFd = -1
+            return
+        }
 
-        // Poll immediately (non-blocking) — process may already be dead
-        var timeout = timespec(tv_sec: 0, tv_nsec: 100_000_000) // 100ms
-        var event = kevent()
-        let n = kevent(kq, nil, 0, &event, 1, &timeout)
-        guard n > 0 else { return nil }
+        // Background thread blocks until the process exits
+        let watchedPid = self.pid
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var event = kevent()
+            // Block indefinitely until process exits
+            let n = Darwin.kevent(kq, nil, 0, &event, 1, nil)
+            guard let self = self else {
+                close(kq)
+                return
+            }
 
-        let status = Int32(event.data)
-        // Parse wait-style status
-        if (status & 0x7f) == 0 {
-            // Normal exit: WEXITSTATUS
-            return (status >> 8) & 0xff
-        } else {
-            // Killed by signal: return negative signal number (convention)
-            return -(status & 0x7f)
+            var exitCode: Int32 = -1
+            if n > 0 {
+                let status = Int32(event.data)
+                if (status & 0x7f) == 0 {
+                    // Normal exit: WEXITSTATUS
+                    exitCode = (status >> 8) & 0xff
+                } else {
+                    // Killed by signal: negative signal number
+                    exitCode = -(status & 0x7f)
+                }
+            }
+
+            self.lock.lock()
+            self.kqueueExitCode = exitCode
+            let alreadyStopped = self.stopped
+            self.lock.unlock()
+
+            if !alreadyStopped {
+                let cuaEvent = CUAEvent(
+                    type: ProcessEventType.exit.rawValue,
+                    pid: watchedPid,
+                    details: ["exit_code": AnyCodable(exitCode)]
+                )
+                self.eventBus.publish(cuaEvent)
+                self.stop()
+            }
         }
     }
 
@@ -412,7 +409,7 @@ public final class ProcessWatcher {
     }
 
     private func waitForExitCode() -> Int32 {
-        // First check if kqueue captured the exit code
+        // Check if kqueue captured the exit code
         lock.lock()
         if let kqCode = kqueueExitCode {
             lock.unlock()
@@ -420,12 +417,7 @@ public final class ProcessWatcher {
         }
         lock.unlock()
 
-        // Try kqueue one more time (process just died)
-        if let kqCode = readKqueueExitStatus() {
-            return kqCode
-        }
-
-        // Last resort: waitpid (only works for child processes)
+        // Fallback: waitpid (only works for child processes)
         var status: Int32 = 0
         let result = waitpid(pid, &status, WNOHANG)
         if result > 0 {
