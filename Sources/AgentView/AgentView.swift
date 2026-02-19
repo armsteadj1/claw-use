@@ -1206,13 +1206,22 @@ struct WebTab: ParsableCommand {
     @Argument(help: "Tab title or URL to match")
     var match: String
 
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
     func run() throws {
         let params: [String: AnyCodable] = ["match": AnyCodable(match)]
         let response = try callDaemon(method: "web.switchTab", params: params)
-        try printResponse(response, pretty: pretty)
+        if format == "compact", let error = response.error {
+            print("❌ \(error.message)")
+            throw ExitCode.failure
+        }
+        try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
+            CompactFormatter.formatWebSwitchTab(data: dict)
+        }
     }
 }
 

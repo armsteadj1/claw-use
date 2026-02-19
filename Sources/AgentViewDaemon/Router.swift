@@ -143,9 +143,11 @@ final class Router {
         // This happens when the display is off or the screen is locked.
         if result.success, result.transportUsed == "ax" {
             let isEmpty: Bool
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
             if let data = result.data,
                let snapshotData = try? JSONOutput.encode(AnyCodable(data)),
-               let snapshot = try? JSONDecoder().decode(AppSnapshot.self, from: snapshotData) {
+               let snapshot = try? decoder.decode(AppSnapshot.self, from: snapshotData) {
                 isEmpty = snapshot.stats.enrichedElements == 0 || snapshot.content.sections.isEmpty
             } else {
                 isEmpty = true

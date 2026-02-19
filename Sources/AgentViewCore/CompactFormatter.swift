@@ -339,6 +339,21 @@ public enum CompactFormatter {
         return "→ \(title) (\(url))"
     }
 
+    // MARK: - Web Switch Tab
+
+    /// Format web tab switch result: `→ switched to "Claude" (claude.ai)`
+    public static func formatWebSwitchTab(data: [String: AnyCodable]) -> String {
+        let success = data["success"]?.value as? Bool ?? false
+        if !success {
+            let error = data["error"]?.value as? String ?? "tab switch failed"
+            return "❌ \(error)"
+        }
+        let title = data["title"]?.value as? String ?? ""
+        let url = data["url"]?.value as? String ?? ""
+        let host = extractHost(from: url)
+        return "→ switched to \"\(title)\" (\(host))"
+    }
+
     // MARK: - Web Click
 
     /// Format web click result: `✅ clicked "Learn more" (score: 100)`

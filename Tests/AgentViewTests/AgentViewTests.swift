@@ -2928,3 +2928,75 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     #expect(decoded.deliver.sessionKey == "main")
     #expect(decoded.data["pid"]?.value as? Int == 99999)
 }
+
+// MARK: - Web Switch Tab Compact Formatter Tests
+
+@Test func compactFormatterFormatWebSwitchTabSuccess() {
+    let data: [String: AnyCodable] = [
+        "success": AnyCodable(true),
+        "action": AnyCodable("switch_tab"),
+        "title": AnyCodable("Claude"),
+        "url": AnyCodable("https://claude.ai/chat"),
+    ]
+    let result = CompactFormatter.formatWebSwitchTab(data: data)
+    #expect(result == "→ switched to \"Claude\" (claude.ai)")
+}
+
+@Test func compactFormatterFormatWebSwitchTabError() {
+    let data: [String: AnyCodable] = [
+        "success": AnyCodable(false),
+        "error": AnyCodable("no tab matching \"FakeTab\""),
+    ]
+    let result = CompactFormatter.formatWebSwitchTab(data: data)
+    #expect(result == "❌ no tab matching \"FakeTab\"")
+}
+
+// MARK: - AX Snapshot Fallback Decoder Test
+
+@Test func snapshotFallbackDecoderHandlesSnakeCase() throws {
+    // Simulate the AX transport returning snake_case JSON (as JSONOutput.encoder produces)
+    let snapshot = AppSnapshot(
+        app: "TestApp",
+        bundleId: "com.test.app",
+        pid: 123,
+        timestamp: "2024-01-01T00:00:00Z",
+        window: WindowInfo(title: "Win", size: nil, focused: true),
+        meta: [:],
+        content: ContentTree(summary: nil, sections: []),
+        actions: [],
+        stats: SnapshotStats(totalNodes: 10, prunedNodes: 10, enrichedElements: 0, walkTimeMs: 1, enrichTimeMs: 1)
+    )
+
+    // Encode with snake_case (as JSONOutput.encoder does)
+    let snapshotData = try JSONOutput.encode(snapshot)
+
+    // Parse back as [String: Any] then convert to [String: AnyCodable] (as AXTransport does)
+    let dict = try JSONSerialization.jsonObject(with: snapshotData) as! [String: Any]
+    func convertDict(_ d: [String: Any]) -> [String: AnyCodable] {
+        d.reduce(into: [String: AnyCodable]()) { result, kv in
+            if let nested = kv.value as? [String: Any] {
+                result[kv.key] = AnyCodable(convertDict(nested))
+            } else if let arr = kv.value as? [Any] {
+                result[kv.key] = AnyCodable(arr.map { item -> AnyCodable in
+                    if let d = item as? [String: Any] { return AnyCodable(convertDict(d)) }
+                    return AnyCodable(item)
+                })
+            } else {
+                result[kv.key] = AnyCodable(kv.value)
+            }
+        }
+    }
+    let acDict = convertDict(dict)
+
+    // Re-encode as AnyCodable (as Router does)
+    let reEncoded = try JSONOutput.encode(AnyCodable(acDict))
+
+    // Decode with convertFromSnakeCase (the fix)
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let decoded = try decoder.decode(AppSnapshot.self, from: reEncoded)
+
+    #expect(decoded.stats.enrichedElements == 0)
+    #expect(decoded.content.sections.isEmpty)
+    #expect(decoded.app == "TestApp")
+}
