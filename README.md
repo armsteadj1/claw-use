@@ -2,7 +2,57 @@
 
 **Give your AI agent eyes and hands on macOS.**
 
-AgentView is a daemon that lets AI agents see and interact with any macOS application — browsers, native apps, even locked screens. One CLI, every app, always on.
+AgentView is a persistent daemon that lets agents interact with any running macOS application — browsers, native apps, even locked screens. One CLI, every app, always on.
+
+## The Numbers
+
+We benchmarked AgentView against the tools agents use today — browser automation (Playwright/CDP snapshots), AppleScript via `exec`, and HTTP fetch. Same page, same tasks, real measurements.
+
+### Speed
+
+| Task | Today | AgentView | Improvement |
+|------|-------|-----------|-------------|
+| List running apps | 190ms (AppleScript) | **27ms** | 7x faster |
+| Web page snapshot | ~1,200ms (browser tool) | **235ms** | 5x faster |
+| Click an element | snapshot + act (2 calls) | **968ms** (1 call via `pipe`) | Single round-trip |
+| Screenshot | ~500ms (browser) | **109ms** | 4.5x faster |
+| Text extraction | 300ms (web fetch) | **251ms** | Comparable |
+
+### Token Cost
+
+Same page (IANA Example Domains), same information:
+
+| Format | Bytes | Relative |
+|--------|-------|----------|
+| Browser tool (ARIA tree) | 3,318 | 5.7x more |
+| AgentView JSON | 2,526 | 4.4x more |
+| **AgentView compact** | **577** | **1x** |
+
+The compact snapshot contains everything an agent needs — links with URLs, headings, page type, word count. The browser tool returns the entire DOM tree including footer cells, ARIA landmarks, and nested role annotations.
+
+At 10 snapshots per task, that's **~27,000 bytes saved per task** — real money at LLM token prices.
+
+### Tool Calls Per Workflow
+
+**"Read a page and click something"**
+- Today: `snapshot` → parse → `act click` = **3 tool calls**, ~4,000+ bytes
+- AgentView: `pipe safari click --match "Sign in"` = **1 tool call**, ~50 bytes back
+
+**"Fill a login form"**
+- Today: `snapshot` → `fill email` → `fill password` → `click submit` = **4 calls**
+- AgentView: 3× `pipe` commands = **3 calls**, each self-contained (no snapshot step needed)
+
+Fewer tool calls = fewer LLM round-trips = faster completion = lower cost.
+
+## What You Can't Do Today
+
+| Capability | Current Tools | AgentView |
+|-----------|---------------|-----------|
+| 🔒 Locked screen | Dead — browser tools need a display | Safari transport works via AppleScript |
+| 📱 Native apps (Notes, Calendar, Numbers) | No tool covers this | Full AX UI tree with refs and actions |
+| 👁️ Event-driven wake | Poll in a loop, burn tokens | **Sentinels** push events to your agent |
+| 🔄 Transport failure | Retry the same broken path | Auto-fallback: AX → Safari → CDP → AppleScript |
+| ⚡ One-shot interactions | Snapshot, parse, then act (3 steps) | `pipe` = snapshot + match + act in 1 call |
 
 ## 30-Second Demo
 
@@ -15,50 +65,30 @@ agentview list
 agentview snapshot "Safari"
 # → Enriched UI: 31 elements, buttons, tabs, text fields with refs (e1, e2...)
 
-# Click something
-agentview web click "Sign In"
-# → ✅ clicked "Sign In", score: 100
-
-# Fill a form
-agentview web fill "email" --value "hello@example.com"
-# → ✅ filled "email" field
-
-# Take a screenshot
-agentview screenshot Safari
-# → 📸 1325x941 PNG saved
+agentview pipe safari click --match "Sign in"
+# ✅ clicked "Sign in" (score: 100)
 
 # All of this works with the screen locked 🔒
 ```
 
-## Why AgentView?
+## Sentinels
 
-**Your agent lives on a Mac.** It should be able to use it.
+AgentView doesn't just respond to commands — it watches.
 
-| Problem | AgentView Solution |
-|---------|-------------------|
-| Browser automation needs a managed browser | Uses whatever's already open (Safari, Chrome) |
-| Screen locks kill your agent's eyes | Safari transport works via AppleScript — locked screen, no problem |
-| One transport fails, agent loops forever | Self-healing router: AX → Safari → CDP → AppleScript, auto-fallback |
-| No way to read native apps | Accessibility APIs expose Notes, Calendar, Numbers, Finder, everything |
-| Slow cold-start per command | Persistent daemon with 7ms CDP eval, cached snapshots |
-| Agent can't react to screen events | Event bus + webhook wakes your agent on unlock, app changes, etc. |
-
-## What Can You Build?
-
-### 🌐 Web Automation (Without Playwright)
-
-Navigate, read, click, and fill on any website — through Safari, using the browser that's already there.
+The **event bus** monitors app lifecycle, UI changes, screen state, and foreground switches. When something happens, it wakes your agent via webhook instead of your agent polling "did anything change?"
 
 ```bash
-agentview web navigate "https://github.com/login"
-agentview web snapshot
-# → {pageType: "login", forms: [{fields: [email, password], submitText: "Sign in"}]}
-agentview web fill "email" --value "user@example.com"
-agentview web fill "password" --value "hunter2"
-agentview web click "Sign in"
+# Stream events as JSONL
+agentview watch --app Safari --types value_changed,title_changed
+
+# Configure webhooks — your agent gets called when something needs attention:
+# - A build finishes in Xcode
+# - A dialog pops up asking for permission
+# - The screen unlocks and apps are visible again
+# - A file changes in Finder
 ```
 
-### 📸 Visual QA & Debugging
+Think of Sentinels as your agent's peripheral vision. Instead of burning tokens on polling loops, the daemon tells your agent when to look.
 
 Screenshot any app and feed it to a vision model. "What does the screen look like right now?"
 
@@ -69,52 +99,21 @@ agentview screenshot "Xcode"
 
 ### 🔓 Permission & Dialog Handler
 
-Detect system dialogs and handle them. No more "hey human, click Allow."
+### Output
+Default output is **compact** — optimized for agent token budgets. Use `--format json` when you need structured data, `--pretty` for human-readable JSON.
 
-```bash
-agentview snapshot "SecurityAgent"
-# → Password field detected
-agentview act "SecurityAgent" fill --ref e1 --value "$PASSWORD"
-agentview act "SecurityAgent" click --ref e2  # "OK" button
-```
+## How It Works
 
-### 📝 Native App Control
+AgentView runs a persistent daemon (`agentviewd`) that maintains connections to every app through four transport layers:
 
-Read and write to Notes, Calendar, Numbers — apps that have no API.
+- **Accessibility (AX)** — richest data: roles, labels, values, actions for any native app
+- **Chrome DevTools Protocol** — persistent WebSocket to Electron apps, 7ms eval
+- **AppleScript** — app scripting + Safari JS injection (works on locked screens 🔒)
+- **Screenshots** — CGWindowListCreateImage for visual capture
 
-```bash
-# Read your notes
-agentview snapshot "Notes"
-# → List of notes with titles, dates, content previews
+The **self-healing router** picks the best transport per app and auto-falls back on failure. Snapshots are cached with stable refs. The event bus watches everything.
 
-# Read a spreadsheet
-agentview snapshot "Numbers"
-# → Table data with rows, columns, cell values
-
-# Check your calendar
-agentview snapshot "Calendar"
-# → Today's events with times and titles
-```
-
-### 👁️ Watchdog & Triggers
-
-Stream events and react. "Tell me when the build finishes."
-
-```bash
-agentview watch --app "Xcode" --types "value_changed"
-# → JSONL stream of UI changes, piped to your agent
-```
-
-### 🔄 Self-Healing Workflows
-
-The transport router handles failures automatically. Your agent never gets stuck.
-
-```bash
-agentview status
-# → Safari: [safari: healthy, ax: healthy] 
-# → Obsidian: [cdp: connected, ax: healthy]
-# → Chrome: [cdp: reconnecting, ax: healthy]  ← auto-recovering
-```
+→ Deep dive: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## Install
 
@@ -134,50 +133,6 @@ agentview daemon start
 # Grant Accessibility permission when prompted
 # For Safari: enable Develop → Allow JavaScript from Apple Events
 ```
-
-## Commands
-
-### Core
-| Command | Description |
-|---------|-------------|
-| `agentview list` | List all running GUI apps |
-| `agentview snapshot <app>` | Enriched UI snapshot with interactive refs |
-| `agentview act <app> <action> --ref <ref>` | Click, fill, focus by ref |
-| `agentview pipe <app> <action> --match <text>` | Snapshot + fuzzy match + act in one call |
-| `agentview screenshot <app>` | Capture window as PNG |
-| `agentview status` | Daemon health, transports, screen state |
-| `agentview watch [--app] [--types]` | Stream UI events as JSONL |
-
-### Web (Safari)
-| Command | Description |
-|---------|-------------|
-| `agentview web tabs` | List all Safari tabs |
-| `agentview web navigate <url>` | Open URL (or switch to existing tab) |
-| `agentview web snapshot` | Semantic page analysis (type, forms, links, content) |
-| `agentview web click <match>` | Fuzzy click on page element |
-| `agentview web fill <match> --value <val>` | Fuzzy fill form field |
-| `agentview web extract` | Page content as clean markdown |
-| `agentview web tab <match>` | Switch tab by fuzzy title/URL |
-
-### Daemon
-| Command | Description |
-|---------|-------------|
-| `agentview daemon start` | Start the daemon |
-| `agentview daemon stop` | Stop the daemon |
-| `agentview daemon status` | Check if running |
-
-## How It Works (High Level)
-
-AgentView runs a persistent daemon (`agentviewd`) that maintains connections to every app on your Mac through multiple transport layers:
-
-- **Accessibility APIs** — the richest UI data (roles, labels, values, actions)
-- **Chrome DevTools Protocol** — persistent WebSocket to Electron apps (7ms eval!)
-- **AppleScript** — data access + Safari JavaScript injection (works locked 🔒)
-- **Screenshots** — CGWindowListCreateImage for visual capture
-
-The **self-healing router** picks the best transport per app and auto-falls back on failure. A **snapshot cache** keeps refs stable across calls (`e1` stays `e1`). An **event bus** watches for app lifecycle, UI changes, and screen state — and can wake your agent via webhook.
-
-→ Deep dive: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## For Agent Developers
 
