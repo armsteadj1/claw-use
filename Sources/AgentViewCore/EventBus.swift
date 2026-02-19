@@ -52,8 +52,8 @@ public enum AgentViewEventType: String, CaseIterable {
     case processIdle = "process.idle"
     case processExit = "process.exit"
 
-    // Parliament
-    case parliamentStateChange = "parliament.state_change"
+    // Process Group
+    case processGroupStateChange = "process.group.state_change"
 }
 
 // MARK: - Subscriber

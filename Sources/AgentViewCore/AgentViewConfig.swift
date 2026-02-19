@@ -52,7 +52,7 @@ public struct AgentViewConfig: Codable {
         "process.error",
         "process.exit",
         "process.idle",
-        "parliament.state_change",
+        "process.group.state_change",
     ]
 
     /// Default event file path

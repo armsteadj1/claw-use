@@ -1,4 +1,4 @@
-# AgentView 🦉
+# AgentView
 
 **Give your AI agent eyes and hands on macOS.**
 

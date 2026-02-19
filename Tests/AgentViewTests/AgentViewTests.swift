@@ -2217,134 +2217,134 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     #expect(received.allSatisfy { $0.type.hasPrefix("process.") })
 }
 
-// MARK: - Parliament Tests
+// MARK: - Process Group Tests
 
-@Test func owletStateRawValues() {
-    #expect(OwletState.starting.rawValue == "STARTING")
-    #expect(OwletState.building.rawValue == "BUILDING")
-    #expect(OwletState.testing.rawValue == "TESTING")
-    #expect(OwletState.idle.rawValue == "IDLE")
-    #expect(OwletState.error.rawValue == "ERROR")
-    #expect(OwletState.done.rawValue == "DONE")
-    #expect(OwletState.failed.rawValue == "FAILED")
+@Test func trackedProcessStateRawValues() {
+    #expect(TrackedProcessState.starting.rawValue == "STARTING")
+    #expect(TrackedProcessState.building.rawValue == "BUILDING")
+    #expect(TrackedProcessState.testing.rawValue == "TESTING")
+    #expect(TrackedProcessState.idle.rawValue == "IDLE")
+    #expect(TrackedProcessState.error.rawValue == "ERROR")
+    #expect(TrackedProcessState.done.rawValue == "DONE")
+    #expect(TrackedProcessState.failed.rawValue == "FAILED")
 }
 
-@Test func owletStateCaseIterable() {
-    #expect(OwletState.allCases.count == 7)
+@Test func trackedProcessStateCaseIterable() {
+    #expect(TrackedProcessState.allCases.count == 7)
 }
 
-@Test func owletInitDefaults() {
-    let owlet = Owlet(pid: 123, label: "Issue #42")
-    #expect(owlet.pid == 123)
-    #expect(owlet.label == "Issue #42")
-    #expect(owlet.state == .starting)
-    #expect(owlet.lastEvent == nil)
-    #expect(owlet.lastEventTime == nil)
-    #expect(owlet.lastDetail == nil)
-    #expect(owlet.exitCode == nil)
-    #expect(!owlet.startedAt.isEmpty)
+@Test func trackedProcessInitDefaults() {
+    let process = TrackedProcess(pid: 123, label: "Issue #42")
+    #expect(process.pid == 123)
+    #expect(process.label == "Issue #42")
+    #expect(process.state == .starting)
+    #expect(process.lastEvent == nil)
+    #expect(process.lastEventTime == nil)
+    #expect(process.lastDetail == nil)
+    #expect(process.exitCode == nil)
+    #expect(!process.startedAt.isEmpty)
 }
 
-@Test func parliamentAddAndStatus() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
-    let parliament = Parliament(filePath: path)
+@Test func processGroupAddAndStatus() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let group = ProcessGroupManager(filePath: path)
 
-    let added = parliament.add(pid: 100, label: "Issue #42")
+    let added = group.add(pid: 100, label: "Issue #42")
     #expect(added == true)
-    #expect(parliament.count == 1)
+    #expect(group.count == 1)
 
-    let owlets = parliament.status()
-    #expect(owlets.count == 1)
-    #expect(owlets[0].pid == 100)
-    #expect(owlets[0].label == "Issue #42")
-    #expect(owlets[0].state == .starting)
+    let processes = group.status()
+    #expect(processes.count == 1)
+    #expect(processes[0].pid == 100)
+    #expect(processes[0].label == "Issue #42")
+    #expect(processes[0].state == .starting)
 
     // Cleanup
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func parliamentAddDuplicate() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
-    let parliament = Parliament(filePath: path)
+@Test func processGroupAddDuplicate() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let group = ProcessGroupManager(filePath: path)
 
-    let first = parliament.add(pid: 100, label: "Issue #42")
-    let second = parliament.add(pid: 100, label: "Issue #42 again")
+    let first = group.add(pid: 100, label: "Issue #42")
+    let second = group.add(pid: 100, label: "Issue #42 again")
     #expect(first == true)
     #expect(second == false)
-    #expect(parliament.count == 1)
+    #expect(group.count == 1)
 
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func parliamentRemove() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
-    let parliament = Parliament(filePath: path)
+@Test func processGroupRemove() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let group = ProcessGroupManager(filePath: path)
 
-    parliament.add(pid: 100, label: "Issue #42")
-    parliament.add(pid: 200, label: "Issue #43")
-    #expect(parliament.count == 2)
+    group.add(pid: 100, label: "Issue #42")
+    group.add(pid: 200, label: "Issue #43")
+    #expect(group.count == 2)
 
-    let removed = parliament.remove(pid: 100)
+    let removed = group.remove(pid: 100)
     #expect(removed == true)
-    #expect(parliament.count == 1)
+    #expect(group.count == 1)
 
-    let removedAgain = parliament.remove(pid: 100)
+    let removedAgain = group.remove(pid: 100)
     #expect(removedAgain == false)
 
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func parliamentClear() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
-    let parliament = Parliament(filePath: path)
+@Test func processGroupClear() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
-    parliament.startListening(eventBus: bus)
+    group.startListening(eventBus: bus)
 
-    parliament.add(pid: 100, label: "Active owlet")
-    parliament.add(pid: 200, label: "Done owlet")
-    parliament.add(pid: 300, label: "Failed owlet")
+    group.add(pid: 100, label: "Active process")
+    group.add(pid: 200, label: "Done process")
+    group.add(pid: 300, label: "Failed process")
 
     // Simulate done + failed via events
     bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 200, details: ["exit_code": AnyCodable(0)]))
     bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 300, details: ["exit_code": AnyCodable(1)]))
 
-    let cleared = parliament.clear()
+    let cleared = group.clear()
     #expect(cleared == 2) // done + failed removed
-    #expect(parliament.count == 1)
+    #expect(group.count == 1)
 
-    let remaining = parliament.status()
+    let remaining = group.status()
     #expect(remaining[0].pid == 100)
 
-    parliament.stopListening()
+    group.stopListening()
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func parliamentStateMachineBuilding() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
-    let parliament = Parliament(filePath: path)
+@Test func processGroupStateMachineBuilding() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
-    parliament.startListening(eventBus: bus)
+    group.startListening(eventBus: bus)
 
-    parliament.add(pid: 100, label: "Test")
+    group.add(pid: 100, label: "Test")
 
     // tool_start → BUILDING
     bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: ["tool": AnyCodable("Read")]))
 
-    let owlets = parliament.status()
-    #expect(owlets[0].state == .building)
-    #expect(owlets[0].lastDetail == "Read")
+    let processes = group.status()
+    #expect(processes[0].state == .building)
+    #expect(processes[0].lastDetail == "Read")
 
-    parliament.stopListening()
+    group.stopListening()
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func parliamentStateMachineTesting() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
-    let parliament = Parliament(filePath: path)
+@Test func processGroupStateMachineTesting() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
-    parliament.startListening(eventBus: bus)
+    group.startListening(eventBus: bus)
 
-    parliament.add(pid: 100, label: "Test")
+    group.add(pid: 100, label: "Test")
 
     // tool_start with test command → TESTING
     bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: [
@@ -2352,175 +2352,175 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
         "command": AnyCodable("npm test"),
     ]))
 
-    let owlets = parliament.status()
-    #expect(owlets[0].state == .testing)
+    let processes = group.status()
+    #expect(processes[0].state == .testing)
 
-    parliament.stopListening()
+    group.stopListening()
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func parliamentStateMachineIdle() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
-    let parliament = Parliament(filePath: path)
+@Test func processGroupStateMachineIdle() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
-    parliament.startListening(eventBus: bus)
+    group.startListening(eventBus: bus)
 
-    parliament.add(pid: 100, label: "Test")
+    group.add(pid: 100, label: "Test")
 
     bus.publish(AgentViewEvent(type: ProcessEventType.idle.rawValue, pid: 100, details: ["idle_seconds": AnyCodable(360)]))
 
-    let owlets = parliament.status()
-    #expect(owlets[0].state == .idle)
-    #expect(owlets[0].lastDetail == "no output for 6m")
+    let processes = group.status()
+    #expect(processes[0].state == .idle)
+    #expect(processes[0].lastDetail == "no output for 6m")
 
-    parliament.stopListening()
+    group.stopListening()
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func parliamentStateMachineError() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
-    let parliament = Parliament(filePath: path)
+@Test func processGroupStateMachineError() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
-    parliament.startListening(eventBus: bus)
+    group.startListening(eventBus: bus)
 
-    parliament.add(pid: 100, label: "Test")
+    group.add(pid: 100, label: "Test")
 
     bus.publish(AgentViewEvent(type: ProcessEventType.error.rawValue, pid: 100, details: ["error": AnyCodable("Rate limit")]))
 
-    let owlets = parliament.status()
-    #expect(owlets[0].state == .error)
-    #expect(owlets[0].lastDetail == "Rate limit")
+    let processes = group.status()
+    #expect(processes[0].state == .error)
+    #expect(processes[0].lastDetail == "Rate limit")
 
-    parliament.stopListening()
+    group.stopListening()
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func parliamentStateMachineDone() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
-    let parliament = Parliament(filePath: path)
+@Test func processGroupStateMachineDone() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
-    parliament.startListening(eventBus: bus)
+    group.startListening(eventBus: bus)
 
-    parliament.add(pid: 100, label: "Test")
+    group.add(pid: 100, label: "Test")
 
     bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 100, details: ["exit_code": AnyCodable(0)]))
 
-    let owlets = parliament.status()
-    #expect(owlets[0].state == .done)
-    #expect(owlets[0].exitCode == 0)
+    let processes = group.status()
+    #expect(processes[0].state == .done)
+    #expect(processes[0].exitCode == 0)
 
-    parliament.stopListening()
+    group.stopListening()
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func parliamentStateMachineFailed() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
-    let parliament = Parliament(filePath: path)
+@Test func processGroupStateMachineFailed() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
-    parliament.startListening(eventBus: bus)
+    group.startListening(eventBus: bus)
 
-    parliament.add(pid: 100, label: "Test")
+    group.add(pid: 100, label: "Test")
 
     bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 100, details: ["exit_code": AnyCodable(1)]))
 
-    let owlets = parliament.status()
-    #expect(owlets[0].state == .failed)
-    #expect(owlets[0].exitCode == 1)
+    let processes = group.status()
+    #expect(processes[0].state == .failed)
+    #expect(processes[0].exitCode == 1)
 
-    parliament.stopListening()
+    group.stopListening()
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func parliamentTerminalStatesStick() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
-    let parliament = Parliament(filePath: path)
+@Test func processGroupTerminalStatesStick() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
-    parliament.startListening(eventBus: bus)
+    group.startListening(eventBus: bus)
 
-    parliament.add(pid: 100, label: "Test")
+    group.add(pid: 100, label: "Test")
 
     // Exit with code 0 → DONE
     bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 100, details: ["exit_code": AnyCodable(0)]))
-    #expect(parliament.status()[0].state == .done)
+    #expect(group.status()[0].state == .done)
 
     // Subsequent events should NOT change state
     bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: ["tool": AnyCodable("Read")]))
-    #expect(parliament.status()[0].state == .done) // Still DONE
+    #expect(group.status()[0].state == .done) // Still DONE
 
-    parliament.stopListening()
+    group.stopListening()
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func parliamentIgnoresUnregisteredPids() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
-    let parliament = Parliament(filePath: path)
+@Test func processGroupIgnoresUnregisteredPids() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
-    parliament.startListening(eventBus: bus)
+    group.startListening(eventBus: bus)
 
-    // No owlets registered — events for PID 999 should be ignored
+    // No processes registered — events for PID 999 should be ignored
     bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 999, details: ["tool": AnyCodable("Read")]))
-    #expect(parliament.count == 0)
+    #expect(group.count == 0)
 
-    parliament.stopListening()
+    group.stopListening()
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func parliamentPersistence() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+@Test func processGroupPersistence() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
 
     // Create and populate
     do {
-        let parliament = Parliament(filePath: path)
+        let group = ProcessGroupManager(filePath: path)
         let bus = EventBus()
-        parliament.startListening(eventBus: bus)
-        parliament.add(pid: 100, label: "Issue #42")
-        parliament.add(pid: 200, label: "Issue #43")
+        group.startListening(eventBus: bus)
+        group.add(pid: 100, label: "Issue #42")
+        group.add(pid: 200, label: "Issue #43")
         bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: ["tool": AnyCodable("Bash")]))
-        parliament.stopListening()
+        group.stopListening()
     }
 
     // Reload from disk
-    let parliament2 = Parliament(filePath: path)
-    let owlets = parliament2.status()
-    #expect(owlets.count == 2)
+    let group2 = ProcessGroupManager(filePath: path)
+    let processes = group2.status()
+    #expect(processes.count == 2)
 
-    let owlet100 = owlets.first { $0.pid == 100 }
-    #expect(owlet100?.label == "Issue #42")
-    #expect(owlet100?.state == .building)
+    let proc100 = processes.first { $0.pid == 100 }
+    #expect(proc100?.label == "Issue #42")
+    #expect(proc100?.state == .building)
 
-    let owlet200 = owlets.first { $0.pid == 200 }
-    #expect(owlet200?.label == "Issue #43")
-    #expect(owlet200?.state == .starting)
+    let proc200 = processes.first { $0.pid == 200 }
+    #expect(proc200?.label == "Issue #43")
+    #expect(proc200?.state == .starting)
 
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func parliamentFormatStatusEmpty() {
-    let output = Parliament.formatStatus(owlets: [])
-    #expect(output.contains("0 owlets"))
-    #expect(output.contains("no owlets tracked"))
+@Test func processGroupFormatStatusEmpty() {
+    let output = ProcessGroupManager.formatStatus(processes: [])
+    #expect(output.contains("0 processes"))
+    #expect(output.contains("no processes tracked"))
 }
 
-@Test func parliamentFormatStatusWithOwlets() {
-    var owlet = Owlet(pid: 100, label: "Issue #42: Add login")
-    owlet.state = .building
-    owlet.lastDetail = "cargo build"
+@Test func processGroupFormatStatusWithProcesses() {
+    var process = TrackedProcess(pid: 100, label: "Issue #42: Add login")
+    process.state = .building
+    process.lastDetail = "cargo build"
 
-    let output = Parliament.formatStatus(owlets: [owlet])
-    #expect(output.contains("1 owlet"))
-    #expect(output.contains("🔨"))
+    let output = ProcessGroupManager.formatStatus(processes: [process])
+    #expect(output.contains("1 process"))
+    #expect(output.contains("[B]"))
     #expect(output.contains("BUILDING"))
     #expect(output.contains("Issue #42: Add login"))
     #expect(output.contains("cargo build"))
 }
 
-@Test func parliamentJsonStatus() {
-    var owlet = Owlet(pid: 100, label: "Issue #42")
-    owlet.state = .done
-    owlet.exitCode = 0
-    owlet.lastEvent = "process.exit"
+@Test func processGroupJsonStatus() {
+    var process = TrackedProcess(pid: 100, label: "Issue #42")
+    process.state = .done
+    process.exitCode = 0
+    process.lastEvent = "process.exit"
 
-    let json = Parliament.jsonStatus(owlets: [owlet])
+    let json = ProcessGroupManager.jsonStatus(processes: [process])
     #expect(json.count == 1)
     #expect(json[0]["pid"]?.value as? Int == 100)
     #expect(json[0]["label"]?.value as? String == "Issue #42")
@@ -2530,57 +2530,57 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     #expect(json[0]["duration"] != nil)
 }
 
-@Test func parliamentMultipleTestPatterns() {
-    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
-    let parliament = Parliament(filePath: path)
+@Test func processGroupMultipleTestPatterns() {
+    let path = "/tmp/agentview-test-processgroup-\(UUID().uuidString).json"
+    let group = ProcessGroupManager(filePath: path)
     let bus = EventBus()
-    parliament.startListening(eventBus: bus)
+    group.startListening(eventBus: bus)
 
     // Test various test runner patterns
     let testCommands = ["cargo test", "npm test", "pytest", "go test", "swift test", "jest"]
     for (i, cmd) in testCommands.enumerated() {
         let pid = Int32(1000 + i)
-        parliament.add(pid: pid, label: "Test \(cmd)")
+        group.add(pid: pid, label: "Test \(cmd)")
         bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: pid, details: [
             "tool": AnyCodable("Bash"),
             "command": AnyCodable(cmd),
         ]))
     }
 
-    let owlets = parliament.status()
-    #expect(owlets.allSatisfy { $0.state == .testing })
+    let processes = group.status()
+    #expect(processes.allSatisfy { $0.state == .testing })
 
-    parliament.stopListening()
+    group.stopListening()
     try? FileManager.default.removeItem(atPath: path)
 }
 
-@Test func owletCodableRoundTrip() throws {
-    var owlet = Owlet(pid: 42, label: "Test owlet")
-    owlet.state = .building
-    owlet.lastEvent = "process.tool_start"
-    owlet.lastDetail = "Read"
-    owlet.exitCode = nil
+@Test func trackedProcessCodableRoundTrip() throws {
+    var process = TrackedProcess(pid: 42, label: "Test process")
+    process.state = .building
+    process.lastEvent = "process.tool_start"
+    process.lastDetail = "Read"
+    process.exitCode = nil
 
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase
-    let data = try encoder.encode(owlet)
+    let data = try encoder.encode(process)
 
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
-    let decoded = try decoder.decode(Owlet.self, from: data)
+    let decoded = try decoder.decode(TrackedProcess.self, from: data)
 
     #expect(decoded.pid == 42)
-    #expect(decoded.label == "Test owlet")
+    #expect(decoded.label == "Test process")
     #expect(decoded.state == .building)
     #expect(decoded.lastEvent == "process.tool_start")
     #expect(decoded.lastDetail == "Read")
     #expect(decoded.exitCode == nil)
 }
 
-@Test func parliamentStoreCodableRoundTrip() throws {
-    var store = ParliamentStore()
-    store.owlets[100] = Owlet(pid: 100, label: "Issue #42")
-    store.owlets[200] = Owlet(pid: 200, label: "Issue #43")
+@Test func processGroupStoreCodableRoundTrip() throws {
+    var store = ProcessGroupStore()
+    store.processes[100] = TrackedProcess(pid: 100, label: "Issue #42")
+    store.processes[200] = TrackedProcess(pid: 200, label: "Issue #43")
 
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -2588,11 +2588,11 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
-    let decoded = try decoder.decode(ParliamentStore.self, from: data)
+    let decoded = try decoder.decode(ProcessGroupStore.self, from: data)
 
-    #expect(decoded.owlets.count == 2)
-    #expect(decoded.owlets[100]?.label == "Issue #42")
-    #expect(decoded.owlets[200]?.label == "Issue #43")
+    #expect(decoded.processes.count == 2)
+    #expect(decoded.processes[100]?.label == "Issue #42")
+    #expect(decoded.processes[200]?.label == "Issue #43")
 }
 
 // MARK: - EventBus Glob Filter Tests
@@ -2605,7 +2605,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 @Test func typeFilterMatchesWildcardAll() {
     #expect(EventBus.typeFilterMatches(filter: "*", eventType: "process.error") == true)
     #expect(EventBus.typeFilterMatches(filter: "*", eventType: "app.launched") == true)
-    #expect(EventBus.typeFilterMatches(filter: "*", eventType: "parliament.state_change") == true)
+    #expect(EventBus.typeFilterMatches(filter: "*", eventType: "process.group.state_change") == true)
 }
 
 @Test func typeFilterMatchesGlobPrefix() {
@@ -2613,8 +2613,8 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     #expect(EventBus.typeFilterMatches(filter: "process.*", eventType: "process.exit") == true)
     #expect(EventBus.typeFilterMatches(filter: "process.*", eventType: "process.idle") == true)
     #expect(EventBus.typeFilterMatches(filter: "process.*", eventType: "app.launched") == false)
-    #expect(EventBus.typeFilterMatches(filter: "parliament.*", eventType: "parliament.state_change") == true)
-    #expect(EventBus.typeFilterMatches(filter: "parliament.*", eventType: "process.error") == false)
+    #expect(EventBus.typeFilterMatches(filter: "process.group.*", eventType: "process.group.state_change") == true)
+    #expect(EventBus.typeFilterMatches(filter: "process.group.*", eventType: "app.launched") == false)
 }
 
 @Test func typeFilterMatchesGlobNoFalsePrefix() {
@@ -2647,10 +2647,10 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 }
 
 @Test func typeFilterPredicateMultipleGlobs() {
-    let predicate = EventBus.typeFilterPredicate(from: Set(["process.*", "parliament.*"]))
+    let predicate = EventBus.typeFilterPredicate(from: Set(["process.*", "process.group.*"]))
     #expect(predicate != nil)
     #expect(predicate!("process.error") == true)
-    #expect(predicate!("parliament.state_change") == true)
+    #expect(predicate!("process.group.state_change") == true)
     #expect(predicate!("app.launched") == false)
 }
 
@@ -2682,17 +2682,17 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     bus.publish(AgentViewEvent(type: "process.error", pid: 100))
     bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
     bus.publish(AgentViewEvent(type: "process.exit", pid: 100))
-    bus.publish(AgentViewEvent(type: "parliament.state_change", pid: 200))
+    bus.publish(AgentViewEvent(type: "process.group.state_change", pid: 200))
 
     let processEvents = bus.getRecentEvents(typeFilters: Set(["process.*"]))
-    #expect(processEvents.count == 2)
+    #expect(processEvents.count == 3) // process.error, process.exit, process.group.state_change
 
     let allEvents = bus.getRecentEvents(typeFilters: Set(["*"]))
     #expect(allEvents.count == 4)
 
-    let parliamentEvents = bus.getRecentEvents(typeFilters: Set(["parliament.*"]))
-    #expect(parliamentEvents.count == 1)
-    #expect(parliamentEvents[0].type == "parliament.state_change")
+    let groupEvents = bus.getRecentEvents(typeFilters: Set(["process.group.*"]))
+    #expect(groupEvents.count == 1)
+    #expect(groupEvents[0].type == "process.group.state_change")
 }
 
 @Test func eventBusMultipleSubscribersReceiveEvents() {
@@ -2717,39 +2717,39 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     bus.unsubscribe(sub2)
 }
 
-// MARK: - Parliament State Change Event Tests
+// MARK: - Process Group State Change Event Tests
 
-@Test func parliamentEmitsStateChangeEvent() {
+@Test func processGroupEmitsStateChangeEvent() {
     let bus = EventBus()
     let tmpDir = NSTemporaryDirectory() + "agentview-test-\(UUID().uuidString)"
-    let filePath = tmpDir + "/parliament.json"
-    let parliament = Parliament(filePath: filePath)
-    parliament.startListening(eventBus: bus)
+    let filePath = tmpDir + "/process-groups.json"
+    let group = ProcessGroupManager(filePath: filePath)
+    group.startListening(eventBus: bus)
 
     var stateChanges: [AgentViewEvent] = []
-    let subId = bus.subscribe(typeFilters: Set(["parliament.state_change"])) { event in
+    let subId = bus.subscribe(typeFilters: Set(["process.group.state_change"])) { event in
         stateChanges.append(event)
     }
 
-    parliament.add(pid: 99999, label: "Test owlet")
+    group.add(pid: 99999, label: "Test process")
 
     // Simulate an error event which should trigger state change
     bus.publish(AgentViewEvent(type: "process.error", pid: 99999, details: ["error": AnyCodable("build failed")]))
 
     #expect(stateChanges.count == 1)
-    #expect(stateChanges[0].type == "parliament.state_change")
+    #expect(stateChanges[0].type == "process.group.state_change")
     #expect(stateChanges[0].pid == 99999)
     let details = stateChanges[0].details
     #expect(details?["old_state"]?.value as? String == "STARTING")
     #expect(details?["new_state"]?.value as? String == "ERROR")
 
     bus.unsubscribe(subId)
-    parliament.stopListening()
+    group.stopListening()
     try? FileManager.default.removeItem(atPath: tmpDir)
 }
 
-@Test func parliamentStateChangeEventType() {
-    #expect(AgentViewEventType.parliamentStateChange.rawValue == "parliament.state_change")
+@Test func processGroupStateChangeEventType() {
+    #expect(AgentViewEventType.processGroupStateChange.rawValue == "process.group.state_change")
 }
 
 // MARK: - AgentViewConfig Tests
@@ -2762,7 +2762,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     #expect(resolved.priority.contains("process.error"))
     #expect(resolved.priority.contains("process.exit"))
     #expect(resolved.priority.contains("process.idle"))
-    #expect(resolved.priority.contains("parliament.state_change"))
+    #expect(resolved.priority.contains("process.group.state_change"))
 }
 
 @Test func agentViewConfigResolvedEnabled() {
@@ -2801,7 +2801,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     #expect(defaults.contains("process.error"))
     #expect(defaults.contains("process.exit"))
     #expect(defaults.contains("process.idle"))
-    #expect(defaults.contains("parliament.state_change"))
+    #expect(defaults.contains("process.group.state_change"))
 }
 
 // MARK: - EventFileWriter Tests
@@ -2911,7 +2911,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
 
 @Test func eventFilePayloadCodableRoundTrip() throws {
     let payload = EventFilePayload(
-        type: "agentview.parliament.state_change",
+        type: "agentview.process.group.state_change",
         timestamp: "2026-02-18T20:00:00Z",
         data: [
             "pid": AnyCodable(99999),
@@ -2924,7 +2924,7 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     let data = try JSONEncoder().encode(payload)
     let decoded = try JSONDecoder().decode(EventFilePayload.self, from: data)
 
-    #expect(decoded.type == "agentview.parliament.state_change")
+    #expect(decoded.type == "agentview.process.group.state_change")
     #expect(decoded.deliver.sessionKey == "main")
     #expect(decoded.data["pid"]?.value as? Int == 99999)
 }

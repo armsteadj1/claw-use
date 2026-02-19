@@ -10,7 +10,7 @@ struct AgentView: ParsableCommand {
         commandName: "agentview",
         abstract: "Read macOS Accessibility APIs and expose structured UI state to AI agents.",
         version: "0.3.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self, ProcessCmd.self, ParliamentCmd.self, EventsCmd.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self, ProcessCmd.self, EventsCmd.self]
     )
 }
 
@@ -1273,7 +1273,7 @@ struct ProcessCmd: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "process",
         abstract: "Monitor running processes and parse their output into structured events",
-        subcommands: [ProcessWatch.self, ProcessUnwatch.self, ProcessList.self]
+        subcommands: [ProcessWatch.self, ProcessUnwatch.self, ProcessList.self, ProcessGroupCmd.self]
     )
 }
 
@@ -1352,24 +1352,27 @@ struct ProcessList: ParsableCommand {
     }
 }
 
-// MARK: - parliament
+// MARK: - process group
 
-struct ParliamentCmd: ParsableCommand {
+struct ProcessGroupCmd: ParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "parliament",
-        abstract: "Multi-process dashboard for tracking owlets (parallel Claude Code processes)",
-        subcommands: [ParliamentAdd.self, ParliamentRemove.self, ParliamentClear.self, ParliamentStatus.self]
+        commandName: "group",
+        abstract: "Multi-process dashboard for tracking parallel processes",
+        subcommands: [ProcessGroupAdd.self, ProcessGroupRemove.self, ProcessGroupClear.self, ProcessGroupStatus.self]
     )
 }
 
-struct ParliamentAdd: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "add", abstract: "Register an owlet to track")
+struct ProcessGroupAdd: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "add", abstract: "Register a process to track")
 
     @Argument(help: "Process ID to track")
     var pid: Int32
 
-    @Option(name: .long, help: "Label for this owlet (e.g. \"Issue #42: Add login\")")
+    @Option(name: .long, help: "Label for this process (e.g. \"Issue #42: Add login\")")
     var label: String?
+
+    @Option(name: .long, help: "Group name (default: \"default\")")
+    var group: String = "default"
 
     @Flag(name: .long, help: "Output as JSON")
     var json: Bool = false
@@ -1378,8 +1381,9 @@ struct ParliamentAdd: ParsableCommand {
         let params: [String: AnyCodable] = [
             "pid": AnyCodable(Int(pid)),
             "label": AnyCodable(label ?? "PID \(pid)"),
+            "group": AnyCodable(group),
         ]
-        let response = try callDaemon(method: "parliament.add", params: params)
+        let response = try callDaemon(method: "process.group.add", params: params)
 
         if json {
             try printResponse(response, pretty: false)
@@ -1388,13 +1392,13 @@ struct ParliamentAdd: ParsableCommand {
                 fputs("Error: \(error.message)\n", stderr)
                 throw ExitCode.failure
             }
-            print("✅ Added owlet PID \(pid) (\(label ?? "PID \(pid)"))")
+            print("Added process PID \(pid) (\(label ?? "PID \(pid)"))")
         }
     }
 }
 
-struct ParliamentRemove: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "remove", abstract: "Stop tracking an owlet")
+struct ProcessGroupRemove: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "remove", abstract: "Stop tracking a process")
 
     @Argument(help: "Process ID to stop tracking")
     var pid: Int32
@@ -1404,7 +1408,7 @@ struct ParliamentRemove: ParsableCommand {
 
     func run() throws {
         let params: [String: AnyCodable] = ["pid": AnyCodable(Int(pid))]
-        let response = try callDaemon(method: "parliament.remove", params: params)
+        let response = try callDaemon(method: "process.group.remove", params: params)
 
         if json {
             try printResponse(response, pretty: false)
@@ -1413,19 +1417,22 @@ struct ParliamentRemove: ParsableCommand {
                 fputs("Error: \(error.message)\n", stderr)
                 throw ExitCode.failure
             }
-            print("🗑️  Removed owlet PID \(pid)")
+            print("Removed process PID \(pid)")
         }
     }
 }
 
-struct ParliamentClear: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "clear", abstract: "Remove all completed/exited owlets")
+struct ProcessGroupClear: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "clear", abstract: "Remove all completed/exited processes")
+
+    @Option(name: .long, help: "Group name (default: \"default\")")
+    var group: String = "default"
 
     @Flag(name: .long, help: "Output as JSON")
     var json: Bool = false
 
     func run() throws {
-        let response = try callDaemon(method: "parliament.clear")
+        let response = try callDaemon(method: "process.group.clear")
 
         if json {
             try printResponse(response, pretty: false)
@@ -1437,20 +1444,23 @@ struct ParliamentClear: ParsableCommand {
             if let result = response.result, let dict = result.value as? [String: AnyCodable] {
                 let removed = dict["removed_count"]?.value as? Int ?? 0
                 let remaining = dict["remaining_count"]?.value as? Int ?? 0
-                print("🧹 Cleared \(removed) completed owlet\(removed == 1 ? "" : "s"), \(remaining) remaining")
+                print("Cleared \(removed) completed process\(removed == 1 ? "" : "es"), \(remaining) remaining")
             }
         }
     }
 }
 
-struct ParliamentStatus: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "status", abstract: "Show all tracked owlets and their current state")
+struct ProcessGroupStatus: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "status", abstract: "Show all tracked processes and their current state")
+
+    @Option(name: .long, help: "Group name (default: \"default\")")
+    var group: String = "default"
 
     @Flag(name: .long, help: "Output as JSON")
     var json: Bool = false
 
     func run() throws {
-        let response = try callDaemon(method: "parliament.status")
+        let response = try callDaemon(method: "process.group.status")
 
         if let error = response.error {
             fputs("Error: \(error.message)\n", stderr)
@@ -1458,7 +1468,7 @@ struct ParliamentStatus: ParsableCommand {
         }
 
         guard let result = response.result, let dict = result.value as? [String: AnyCodable] else {
-            if json { print("{}") } else { print("🦉 Parliament Status (0 owlets)") }
+            if json { print("{}") } else { print("Process Group Status (0 processes)") }
             return
         }
 
@@ -1467,34 +1477,34 @@ struct ParliamentStatus: ParsableCommand {
             return
         }
 
-        // Decode owlets from response and format
-        guard let owletsArr = dict["owlets"]?.value as? [AnyCodable] else {
-            print(Parliament.formatStatus(owlets: []))
+        // Decode processes from response and format
+        guard let processesArr = dict["processes"]?.value as? [AnyCodable] else {
+            print(ProcessGroupManager.formatStatus(processes: []))
             return
         }
 
-        let owlets: [Owlet] = owletsArr.compactMap { item in
+        let processes: [TrackedProcess] = processesArr.compactMap { item in
             guard let d = item.value as? [String: AnyCodable] else { return nil }
             let pid = (d["pid"]?.value as? Int).map { Int32($0) } ?? 0
             let label = d["label"]?.value as? String ?? ""
             let stateStr = d["state"]?.value as? String ?? "STARTING"
-            let state = OwletState(rawValue: stateStr) ?? .starting
+            let state = TrackedProcessState(rawValue: stateStr) ?? .starting
 
-            var owlet = Owlet(pid: pid, label: label)
-            owlet.state = state
-            owlet.lastEvent = d["last_event"]?.value as? String
-            owlet.lastEventTime = d["last_event_time"]?.value as? String
-            owlet.lastDetail = d["last_detail"]?.value as? String
+            var process = TrackedProcess(pid: pid, label: label)
+            process.state = state
+            process.lastEvent = d["last_event"]?.value as? String
+            process.lastEventTime = d["last_event_time"]?.value as? String
+            process.lastDetail = d["last_detail"]?.value as? String
             if let startedAt = d["started_at"]?.value as? String {
-                owlet.startedAt = startedAt
+                process.startedAt = startedAt
             }
             if let exitCode = d["exit_code"]?.value as? Int {
-                owlet.exitCode = exitCode
+                process.exitCode = exitCode
             }
-            return owlet
+            return process
         }
 
-        print(Parliament.formatStatus(owlets: owlets))
+        print(ProcessGroupManager.formatStatus(processes: processes))
     }
 }
 
@@ -1511,7 +1521,7 @@ struct EventsCmd: ParsableCommand {
 struct EventsSubscribe: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "subscribe", abstract: "Subscribe to a filtered event stream via UDS (NDJSON)")
 
-    @Option(name: .long, help: "Filter pattern (glob-style, e.g. \"process.*\", \"parliament.*\", \"*\" for all)")
+    @Option(name: .long, help: "Filter pattern (glob-style, e.g. \"process.*\", \"process.group.*\", \"*\" for all)")
     var filter: String?
 
     @Option(name: .long, help: "Filter by app name (partial match)")

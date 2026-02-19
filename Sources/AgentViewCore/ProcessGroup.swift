@@ -1,9 +1,9 @@
 import Foundation
 
-// MARK: - Owlet State Machine
+// MARK: - Tracked Process State Machine
 
-/// Derived state of an owlet (watched process) based on process events
-public enum OwletState: String, Codable, CaseIterable {
+/// Derived state of a tracked process based on process events
+public enum TrackedProcessState: String, Codable, CaseIterable {
     case starting = "STARTING"
     case building = "BUILDING"
     case testing = "TESTING"
@@ -13,13 +13,13 @@ public enum OwletState: String, Codable, CaseIterable {
     case failed = "FAILED"
 }
 
-// MARK: - Owlet Model
+// MARK: - Tracked Process Model
 
-/// A tracked owlet in the parliament
-public struct Owlet: Codable {
+/// A tracked process in a process group
+public struct TrackedProcess: Codable {
     public let pid: Int32
     public var label: String
-    public var state: OwletState
+    public var state: TrackedProcessState
     public var lastEvent: String?
     public var lastEventTime: String?
     public var lastDetail: String?
@@ -38,23 +38,23 @@ public struct Owlet: Codable {
     }
 }
 
-// MARK: - Parliament Store (persistence)
+// MARK: - Process Group Store (persistence)
 
-/// Persisted parliament state
-public struct ParliamentStore: Codable {
-    public var owlets: [Int32: Owlet]
+/// Persisted process group state
+public struct ProcessGroupStore: Codable {
+    public var processes: [Int32: TrackedProcess]
 
     public init() {
-        self.owlets = [:]
+        self.processes = [:]
     }
 }
 
-// MARK: - Parliament
+// MARK: - ProcessGroupManager
 
-/// Manages owlet tracking, state derivation from events, and persistence
-public final class Parliament {
+/// Manages tracked processes, state derivation from events, and persistence
+public final class ProcessGroupManager {
     private let lock = NSLock()
-    private var store: ParliamentStore
+    private var store: ProcessGroupStore
     private let filePath: String
     private var subscriptionId: String?
     private weak var eventBus: EventBus?
@@ -69,9 +69,9 @@ public final class Parliament {
     ]
 
     public init(filePath: String? = nil) {
-        let path = filePath ?? (NSHomeDirectory() + "/.agentview/parliament.json")
+        let path = filePath ?? (NSHomeDirectory() + "/.agentview/process-groups.json")
         self.filePath = path
-        self.store = ParliamentStore()
+        self.store = ProcessGroupStore()
         load()
     }
 
@@ -103,75 +103,75 @@ public final class Parliament {
 
     // MARK: - Commands
 
-    /// Add an owlet to the parliament
+    /// Add a tracked process to the group
     @discardableResult
     public func add(pid: Int32, label: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
 
-        if store.owlets[pid] != nil {
+        if store.processes[pid] != nil {
             return false // Already tracked
         }
-        store.owlets[pid] = Owlet(pid: pid, label: label)
+        store.processes[pid] = TrackedProcess(pid: pid, label: label)
         save()
         return true
     }
 
-    /// Remove an owlet from the parliament
+    /// Remove a tracked process from the group
     @discardableResult
     public func remove(pid: Int32) -> Bool {
         lock.lock()
         defer { lock.unlock() }
 
-        guard store.owlets.removeValue(forKey: pid) != nil else {
+        guard store.processes.removeValue(forKey: pid) != nil else {
             return false
         }
         save()
         return true
     }
 
-    /// Clear completed/exited owlets (DONE or FAILED)
+    /// Clear completed/exited processes (DONE or FAILED)
     public func clear() -> Int {
         lock.lock()
         defer { lock.unlock() }
 
-        let before = store.owlets.count
-        store.owlets = store.owlets.filter { _, owlet in
-            owlet.state != .done && owlet.state != .failed
+        let before = store.processes.count
+        store.processes = store.processes.filter { _, process in
+            process.state != .done && process.state != .failed
         }
-        let removed = before - store.owlets.count
+        let removed = before - store.processes.count
         if removed > 0 { save() }
         return removed
     }
 
-    /// Get all owlets sorted by PID
-    public func status() -> [Owlet] {
+    /// Get all tracked processes sorted by PID
+    public func status() -> [TrackedProcess] {
         lock.lock()
         defer { lock.unlock() }
-        return store.owlets.values.sorted { $0.pid < $1.pid }
+        return store.processes.values.sorted { $0.pid < $1.pid }
     }
 
-    /// Number of tracked owlets
+    /// Number of tracked processes
     public var count: Int {
         lock.lock()
         defer { lock.unlock() }
-        return store.owlets.count
+        return store.processes.count
     }
 
-    /// Auto-clean owlets whose PIDs no longer exist
+    /// Auto-clean processes whose PIDs no longer exist
     public func cleanupDead() {
         lock.lock()
         var changed = false
-        for (pid, var owlet) in store.owlets {
+        for (pid, var process) in store.processes {
             // Skip already-terminal states
-            if owlet.state == .done || owlet.state == .failed { continue }
+            if process.state == .done || process.state == .failed { continue }
             if kill(pid, 0) != 0 {
                 // Process is gone — mark as failed (unknown exit)
-                owlet.state = .failed
-                owlet.lastEvent = "process.exit"
-                owlet.lastEventTime = ISO8601DateFormatter().string(from: Date())
-                owlet.lastDetail = "PID no longer exists (cleaned on startup)"
-                store.owlets[pid] = owlet
+                process.state = .failed
+                process.lastEvent = "process.exit"
+                process.lastEventTime = ISO8601DateFormatter().string(from: Date())
+                process.lastDetail = "PID no longer exists (cleaned on startup)"
+                store.processes[pid] = process
                 changed = true
             }
         }
@@ -185,31 +185,31 @@ public final class Parliament {
         guard let pid = event.pid else { return }
 
         lock.lock()
-        guard var owlet = store.owlets[pid] else {
+        guard var process = store.processes[pid] else {
             lock.unlock()
             return
         }
 
         // Don't update terminal states
-        if owlet.state == .done || owlet.state == .failed {
+        if process.state == .done || process.state == .failed {
             lock.unlock()
             return
         }
 
-        let oldState = owlet.state
-        owlet.lastEvent = event.type
-        owlet.lastEventTime = event.timestamp
+        let oldState = process.state
+        process.lastEvent = event.type
+        process.lastEventTime = event.timestamp
 
         switch event.type {
         case ProcessEventType.toolStart.rawValue:
             let tool = event.details?["tool"]?.value as? String ?? ""
             let command = event.details?["command"]?.value as? String ?? ""
             if isTestCommand(command) || isTestCommand(tool) {
-                owlet.state = .testing
-                owlet.lastDetail = command.isEmpty ? tool : command
+                process.state = .testing
+                process.lastDetail = command.isEmpty ? tool : command
             } else {
-                owlet.state = .building
-                owlet.lastDetail = tool
+                process.state = .building
+                process.lastDetail = tool
             }
 
         case ProcessEventType.toolEnd.rawValue:
@@ -217,27 +217,27 @@ public final class Parliament {
             let success = event.details?["success"]?.value as? Bool ?? true
             if !success {
                 let errorMsg = event.details?["error"]?.value as? String
-                owlet.lastDetail = errorMsg ?? "\(tool) failed"
+                process.lastDetail = errorMsg ?? "\(tool) failed"
             } else {
-                owlet.lastDetail = "\(tool) completed"
+                process.lastDetail = "\(tool) completed"
             }
 
         case ProcessEventType.message.rawValue:
             // Messages don't change state, but update detail
             let text = event.details?["text"]?.value as? String ?? ""
             if !text.isEmpty {
-                owlet.lastDetail = String(text.prefix(80))
+                process.lastDetail = String(text.prefix(80))
             }
 
         case ProcessEventType.error.rawValue:
-            owlet.state = .error
+            process.state = .error
             let errorMsg = event.details?["error"]?.value as? String ?? "unknown error"
-            owlet.lastDetail = errorMsg
+            process.lastDetail = errorMsg
 
         case ProcessEventType.idle.rawValue:
-            owlet.state = .idle
+            process.state = .idle
             let seconds = event.details?["idle_seconds"]?.value as? Int ?? 0
-            owlet.lastDetail = "no output for \(seconds / 60)m"
+            process.lastDetail = "no output for \(seconds / 60)m"
 
         case ProcessEventType.exit.rawValue:
             let exitCode: Int
@@ -248,29 +248,29 @@ public final class Parliament {
             } else {
                 exitCode = -1
             }
-            owlet.exitCode = exitCode
-            owlet.state = exitCode == 0 ? .done : .failed
-            owlet.lastDetail = "exit code \(exitCode)"
+            process.exitCode = exitCode
+            process.state = exitCode == 0 ? .done : .failed
+            process.lastDetail = "exit code \(exitCode)"
 
         default:
             break
         }
 
-        store.owlets[pid] = owlet
-        let changed = owlet.state != oldState
+        store.processes[pid] = process
+        let changed = process.state != oldState
         lock.unlock()
 
         if changed {
             save()
-            // Emit parliament.state_change event
+            // Emit process.group.state_change event
             eventBus?.publish(AgentViewEvent(
-                type: AgentViewEventType.parliamentStateChange.rawValue,
+                type: AgentViewEventType.processGroupStateChange.rawValue,
                 pid: pid,
                 details: [
-                    "label": AnyCodable(owlet.label),
+                    "label": AnyCodable(process.label),
                     "old_state": AnyCodable(oldState.rawValue),
-                    "new_state": AnyCodable(owlet.state.rawValue),
-                    "last_detail": AnyCodable(owlet.lastDetail),
+                    "new_state": AnyCodable(process.state.rawValue),
+                    "last_detail": AnyCodable(process.lastDetail),
                 ]
             ))
         }
@@ -278,7 +278,7 @@ public final class Parliament {
 
     private func isTestCommand(_ str: String) -> Bool {
         let lower = str.lowercased()
-        return Parliament.testPatterns.contains { lower.contains($0) }
+        return ProcessGroupManager.testPatterns.contains { lower.contains($0) }
     }
 
     // MARK: - Persistence
@@ -291,7 +291,7 @@ public final class Parliament {
         }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        if let loaded = try? decoder.decode(ParliamentStore.self, from: data) {
+        if let loaded = try? decoder.decode(ProcessGroupStore.self, from: data) {
             store = loaded
         }
     }
@@ -312,27 +312,27 @@ public final class Parliament {
 
     // MARK: - Formatted Output
 
-    /// Human-readable parliament status with emoji indicators
-    public static func formatStatus(owlets: [Owlet]) -> String {
-        if owlets.isEmpty {
-            return "🦉 Parliament Status (0 owlets)\n──────────────────────────────────────────\n  (no owlets tracked)"
+    /// Human-readable process group status with state indicators
+    public static func formatStatus(processes: [TrackedProcess]) -> String {
+        if processes.isEmpty {
+            return "Process Group Status (0 processes)\n──────────────────────────────────────────\n  (no processes tracked)"
         }
 
         var lines: [String] = []
-        lines.append("🦉 Parliament Status (\(owlets.count) owlet\(owlets.count == 1 ? "" : "s"))")
+        lines.append("Process Group Status (\(processes.count) process\(processes.count == 1 ? "" : "es"))")
         lines.append("──────────────────────────────────────────")
 
-        for owlet in owlets {
-            let emoji = stateEmoji(owlet.state)
-            let stateStr = owlet.state.rawValue.padding(toLength: 8, withPad: " ", startingAt: 0)
-            let detail = owlet.lastDetail ?? ""
+        for process in processes {
+            let indicator = stateIndicator(process.state)
+            let stateStr = process.state.rawValue.padding(toLength: 8, withPad: " ", startingAt: 0)
+            let detail = process.lastDetail ?? ""
             let detailStr = detail.isEmpty ? "" : " \(detail)"
-            let durationStr = durationSince(owlet.startedAt)
+            let durationStr = durationSince(process.startedAt)
 
-            let labelTruncated = String(owlet.label.prefix(24))
+            let labelTruncated = String(process.label.prefix(24))
             let labelPadded = labelTruncated.padding(toLength: 24, withPad: " ", startingAt: 0)
 
-            lines.append("\(owlet.pid)  \(labelPadded) \(emoji) \(stateStr)\(detailStr) (\(durationStr))")
+            lines.append("\(process.pid)  \(labelPadded) \(indicator) \(stateStr)\(detailStr) (\(durationStr))")
         }
 
         lines.append("──────────────────────────────────────────")
@@ -340,35 +340,35 @@ public final class Parliament {
     }
 
     /// JSON output for programmatic consumption
-    public static func jsonStatus(owlets: [Owlet]) -> [[String: AnyCodable]] {
-        return owlets.map { owlet in
+    public static func jsonStatus(processes: [TrackedProcess]) -> [[String: AnyCodable]] {
+        return processes.map { process in
             var dict: [String: AnyCodable] = [
-                "pid": AnyCodable(Int(owlet.pid)),
-                "label": AnyCodable(owlet.label),
-                "state": AnyCodable(owlet.state.rawValue),
-                "started_at": AnyCodable(owlet.startedAt),
+                "pid": AnyCodable(Int(process.pid)),
+                "label": AnyCodable(process.label),
+                "state": AnyCodable(process.state.rawValue),
+                "started_at": AnyCodable(process.startedAt),
             ]
-            if let lastEvent = owlet.lastEvent { dict["last_event"] = AnyCodable(lastEvent) }
-            if let lastEventTime = owlet.lastEventTime { dict["last_event_time"] = AnyCodable(lastEventTime) }
-            if let lastDetail = owlet.lastDetail { dict["last_detail"] = AnyCodable(lastDetail) }
-            if let exitCode = owlet.exitCode { dict["exit_code"] = AnyCodable(exitCode) }
+            if let lastEvent = process.lastEvent { dict["last_event"] = AnyCodable(lastEvent) }
+            if let lastEventTime = process.lastEventTime { dict["last_event_time"] = AnyCodable(lastEventTime) }
+            if let lastDetail = process.lastDetail { dict["last_detail"] = AnyCodable(lastDetail) }
+            if let exitCode = process.exitCode { dict["exit_code"] = AnyCodable(exitCode) }
 
-            let durationStr = durationSince(owlet.startedAt)
+            let durationStr = durationSince(process.startedAt)
             dict["duration"] = AnyCodable(durationStr)
 
             return dict
         }
     }
 
-    private static func stateEmoji(_ state: OwletState) -> String {
+    private static func stateIndicator(_ state: TrackedProcessState) -> String {
         switch state {
-        case .starting: return "🔄"
-        case .building: return "🔨"
-        case .testing:  return "🧪"
-        case .idle:     return "⚠️ "
-        case .error:    return "❌"
-        case .done:     return "✅"
-        case .failed:   return "💀"
+        case .starting: return "[~]"
+        case .building: return "[B]"
+        case .testing:  return "[T]"
+        case .idle:     return "[I]"
+        case .error:    return "[E]"
+        case .done:     return "[+]"
+        case .failed:   return "[-]"
         }
     }
 
