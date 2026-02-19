@@ -333,7 +333,7 @@ public final class ProcessWatcher {
         // Background thread blocks until the process exits
         let watchedPid = self.pid
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            var event = kevent()
+            var event = kevent(ident: 0, filter: 0, flags: 0, fflags: 0, data: 0, udata: nil)
             // Block indefinitely until process exits
             let n = Darwin.kevent(kq, nil, 0, &event, 1, nil)
             guard let self = self else {
