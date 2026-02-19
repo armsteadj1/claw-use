@@ -1384,7 +1384,7 @@ struct ProcessGroupCmd: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "group",
         abstract: "Multi-process dashboard for tracking parallel processes",
-        subcommands: [ProcessGroupAdd.self, ProcessGroupRemove.self, ProcessGroupClear.self, ProcessGroupStatus.self, ProcessGroupReport.self]
+        subcommands: [ProcessGroupAdd.self, ProcessGroupRemove.self, ProcessGroupClear.self, ProcessGroupStatus.self]
     )
 }
 
@@ -1534,245 +1534,153 @@ struct ProcessGroupStatus: ParsableCommand {
     }
 }
 
-struct ProcessGroupReport: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "report", abstract: "Stream milestone NDJSON updates for tracked processes")
-
-    @Option(name: .long, help: "Group name (default: \"default\")")
-    var group: String = "default"
-
-    @Option(name: .long, help: "Output path (file to append NDJSON to, or \"-\" / omit for stdout)")
-    var output: String?
-
-    func run() throws {
-        // Resolve output path: config default, explicit flag, or stdout
-        let config = AgentViewConfig.load()
-        let resolvedOutput: String?
-        if let output = output {
-            resolvedOutput = output == "-" ? nil : output
-        } else if let defaultOutput = config.processGroup?.reporter?.defaultOutput {
-            let expanded = (defaultOutput as NSString).expandingTildeInPath
-            resolvedOutput = expanded
-        } else {
-            resolvedOutput = nil
-        }
-
-        // Get current process group status to know which PIDs to track
-        let statusResponse = try callDaemon(method: "process.group.status")
-        var activePIDs = Set<Int32>()
-        if let result = statusResponse.result, let dict = result.value as? [String: AnyCodable],
-           let processesArr = dict["processes"]?.value as? [AnyCodable] {
-            for item in processesArr {
-                guard let d = item.value as? [String: AnyCodable],
-                      let pid = d["pid"]?.value as? Int,
-                      let stateStr = d["state"]?.value as? String else { continue }
-                let state = TrackedProcessState(rawValue: stateStr) ?? .starting
-                if state != .done && state != .failed {
-                    activePIDs.insert(Int32(pid))
-                }
-            }
-        }
-
-        if activePIDs.isEmpty {
-            fputs("No active processes in group. Reporter exiting.\n", stderr)
-            return
-        }
-
-        fputs("Reporting milestones for \(activePIDs.count) active process\(activePIDs.count == 1 ? "" : "es") in group \"\(group)\"...\n", stderr)
-
-        // Prepare file output if needed
-        let fileHandle: FileHandle?
-        if let path = resolvedOutput {
-            let expanded = (path as NSString).expandingTildeInPath
-            let dir = (expanded as NSString).deletingLastPathComponent
-            let fm = FileManager.default
-            if !fm.fileExists(atPath: dir) {
-                try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-            }
-            if !fm.fileExists(atPath: expanded) {
-                fm.createFile(atPath: expanded, contents: nil)
-            }
-            fileHandle = FileHandle(forWritingAtPath: expanded)
-            fileHandle?.seekToEndOfFile()
-        } else {
-            fileHandle = nil
-        }
-
-        // Stream state change events from daemon and transform to milestones
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-
-        let groupName = group
-        var remaining = activePIDs
-        let semaphore = DispatchSemaphore(value: 0)
-
-        // Subscribe to process.group.state_change events via daemon streaming
-        let streamParams: [String: AnyCodable] = [
-            "filter": AnyCodable("process.group.state_change"),
-        ]
-
-        // Ensure daemon is running
-        if !DaemonClient.isDaemonRunning() {
-            try DaemonClient.startDaemon()
-            var ready = false
-            for _ in 0..<20 {
-                Thread.sleep(forTimeInterval: 0.25)
-                if DaemonClient.isDaemonRunning() {
-                    ready = true
-                    break
-                }
-            }
-            if !ready {
-                throw ExitCode.failure
-            }
-        }
-
-        let request = JSONRPCRequest(method: "subscribe", params: streamParams)
-        let reqEncoder = JSONEncoder()
-        reqEncoder.keyEncodingStrategy = .convertToSnakeCase
-        var requestData = try reqEncoder.encode(request)
-        requestData.append(contentsOf: [0x0A])
-
-        let endpoint = NWEndpoint.unix(path: DaemonClient.socketPath)
-        let nwParams = NWParameters()
-        nwParams.defaultProtocolStack.transportProtocol = NWProtocolTCP.Options()
-        let connection = NWConnection(to: endpoint, using: nwParams)
-
-        let sigSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-        signal(SIGINT, SIG_IGN)
-        sigSource.setEventHandler {
-            connection.cancel()
-        }
-        sigSource.resume()
-
-        func readLoop() {
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { data, _, isComplete, error in
-                if let data = data, !data.isEmpty {
-                    if let str = String(data: data, encoding: .utf8) {
-                        for line in str.split(separator: "\n", omittingEmptySubsequences: true) {
-                            // Parse the event
-                            guard let lineData = line.data(using: .utf8),
-                                  let event = try? JSONDecoder().decode(AgentViewEvent.self, from: lineData) else {
-                                continue
-                            }
-
-                            // Skip the initial subscribe ack (JSON-RPC response)
-                            guard event.type == "process.group.state_change" else { continue }
-
-                            guard let pid = event.pid,
-                                  let details = event.details,
-                                  let label = details["label"]?.value as? String,
-                                  let oldState = details["old_state"]?.value as? String,
-                                  let newState = details["new_state"]?.value as? String else {
-                                continue
-                            }
-
-                            let lastDetail = details["last_detail"]?.value as? String ?? ""
-                            let exitCode = details["exit_code"]?.value as? Int
-
-                            guard let milestone = MilestoneEvent.from(oldState: oldState, newState: newState, exitCode: exitCode) else {
-                                continue
-                            }
-
-                            let record = MilestoneRecord(
-                                timestamp: event.timestamp,
-                                group: groupName,
-                                pid: Int(pid),
-                                label: label,
-                                event: milestone.rawValue,
-                                detail: lastDetail
-                            )
-
-                            if let recordData = try? encoder.encode(record),
-                               var recordStr = String(data: recordData, encoding: .utf8) {
-                                recordStr += "\n"
-                                if let fh = fileHandle, let bytes = recordStr.data(using: .utf8) {
-                                    fh.write(bytes)
-                                } else {
-                                    Swift.print(recordStr, terminator: "")
-                                    fflush(stdout)
-                                }
-                            }
-
-                            // Track completion
-                            let isTerminal = newState == TrackedProcessState.done.rawValue || newState == TrackedProcessState.failed.rawValue
-                            if isTerminal {
-                                remaining.remove(pid)
-                                if remaining.isEmpty {
-                                    fputs("All processes complete. Reporter exiting.\n", stderr)
-                                    semaphore.signal()
-                                    return
-                                }
-                            }
-                        }
-                    }
-                }
-                if isComplete || error != nil {
-                    semaphore.signal()
-                    return
-                }
-                readLoop()
-            }
-        }
-
-        connection.stateUpdateHandler = { state in
-            switch state {
-            case .ready:
-                connection.send(content: requestData, completion: .contentProcessed({ error in
-                    if error != nil {
-                        semaphore.signal()
-                        return
-                    }
-                    readLoop()
-                }))
-            case .failed:
-                semaphore.signal()
-            case .cancelled:
-                semaphore.signal()
-            default:
-                break
-            }
-        }
-
-        let queue = DispatchQueue(label: "agentview.report")
-        connection.start(queue: queue)
-
-        semaphore.wait()
-        sigSource.cancel()
-        connection.cancel()
-        fileHandle?.closeFile()
-    }
-}
-
 // MARK: - events
 
 struct EventsCmd: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "events",
-        abstract: "Event streaming and querying",
-        subcommands: [EventsSubscribe.self, EventsList.self]
+        abstract: "Event streaming, querying, and webhook subscriptions",
+        subcommands: [EventsSubscribe.self, EventsUnsubscribe.self, EventsList.self, EventsRecent.self]
     )
 }
 
 struct EventsSubscribe: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "subscribe", abstract: "Subscribe to a filtered event stream via UDS (NDJSON)")
+    static let configuration = CommandConfiguration(commandName: "subscribe", abstract: "Subscribe to events — stream via UDS or deliver via webhook")
 
-    @Option(name: .long, help: "Filter pattern (glob-style, e.g. \"process.*\", \"process.group.*\", \"*\" for all)")
+    @Option(name: .long, help: "Filter pattern (glob-style, e.g. \"process.exit,process.error,process.idle,process.group.state_change\")")
     var filter: String?
 
     @Option(name: .long, help: "Filter by app name (partial match)")
     var app: String?
 
-    func run() throws {
-        var params: [String: AnyCodable] = [:]
-        if let filter = filter { params["filter"] = AnyCodable(filter) }
-        if let app = app { params["app"] = AnyCodable(app) }
+    @Option(name: .long, help: "Webhook URL to POST events to")
+    var webhook: String?
 
-        try DaemonClient.stream(params: params)
+    @Option(name: .long, help: "Bearer token for webhook auth")
+    var webhookToken: String?
+
+    @Option(name: .long, help: "JSON metadata to merge into every webhook POST payload")
+    var webhookMeta: String?
+
+    @Option(name: .long, help: "Minimum seconds between webhook POSTs (default: 300)")
+    var cooldown: Int = 300
+
+    @Option(name: .long, help: "Max webhook POSTs per hour before circuit breaker trips (default: 20)")
+    var maxWakes: Int = 20
+
+    @Flag(name: .long, help: "Show every event received (even filtered/suppressed)")
+    var verbose: Bool = false
+
+    func run() throws {
+        if let webhookUrl = webhook {
+            // Webhook mode: register webhook subscription with daemon
+            var params: [String: AnyCodable] = [
+                "webhook": AnyCodable(webhookUrl),
+                "cooldown": AnyCodable(cooldown),
+                "max_wakes": AnyCodable(maxWakes),
+                "verbose": AnyCodable(verbose),
+            ]
+            if let filter = filter { params["filter"] = AnyCodable(filter) }
+            if let app = app { params["app"] = AnyCodable(app) }
+            if let token = webhookToken { params["webhook_token"] = AnyCodable(token) }
+            if let meta = webhookMeta { params["webhook_meta"] = AnyCodable(meta) }
+
+            let response = try callDaemon(method: "events.subscribe.webhook", params: params)
+            if let error = response.error {
+                fputs("Error: \(error.message)\n", stderr)
+                throw ExitCode.failure
+            }
+            if let result = response.result, let dict = result.value as? [String: AnyCodable] {
+                let subId = dict["subscription_id"]?.value as? String ?? "?"
+                fputs("Webhook subscription active: \(subId)\n", stderr)
+                fputs("  URL: \(webhookUrl)\n", stderr)
+                fputs("  cooldown: \(cooldown)s, max_wakes: \(maxWakes)/hour\n", stderr)
+            }
+            try printResponse(response, pretty: false)
+        } else {
+            // Streaming mode: subscribe via UDS
+            var params: [String: AnyCodable] = [:]
+            if let filter = filter { params["filter"] = AnyCodable(filter) }
+            if let app = app { params["app"] = AnyCodable(app) }
+
+            try DaemonClient.stream(params: params)
+        }
+    }
+}
+
+struct EventsUnsubscribe: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "unsubscribe", abstract: "Remove a webhook subscription")
+
+    @Argument(help: "Subscription ID (from subscribe output)")
+    var subscriptionId: String
+
+    func run() throws {
+        let params: [String: AnyCodable] = [
+            "subscription_id": AnyCodable(subscriptionId),
+        ]
+        let response = try callDaemon(method: "events.unsubscribe", params: params)
+        if let error = response.error {
+            fputs("Error: \(error.message)\n", stderr)
+            throw ExitCode.failure
+        }
+        print("Unsubscribed: \(subscriptionId)")
     }
 }
 
 struct EventsList: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "list", abstract: "Get recent events (optionally filtered)")
+    static let configuration = CommandConfiguration(commandName: "list", abstract: "Show active event subscriptions and their webhook state")
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        let response = try callDaemon(method: "events.subscriptions")
+        if let error = response.error {
+            fputs("Error: \(error.message)\n", stderr)
+            throw ExitCode.failure
+        }
+
+        guard let result = response.result, let dict = result.value as? [String: AnyCodable] else {
+            print("No active subscriptions")
+            return
+        }
+
+        let webhookCount = dict["webhook_count"]?.value as? Int ?? 0
+        let totalSubs = dict["total_event_bus_subscribers"]?.value as? Int ?? 0
+
+        if pretty {
+            try printResponse(response, pretty: true)
+        } else {
+            print("Active Subscriptions (\(totalSubs) total, \(webhookCount) webhook)")
+            print("──────────────────────────────────────────")
+
+            if let webhookSubs = dict["webhook_subscriptions"]?.value as? [AnyCodable] {
+                for sub in webhookSubs {
+                    guard let d = sub.value as? [String: AnyCodable] else { continue }
+                    let subId = d["subscription_id"]?.value as? String ?? "?"
+                    let url = d["webhook_url"]?.value as? String ?? "?"
+                    let postsHour = d["posts_this_hour"]?.value as? Int ?? 0
+                    let broken = d["circuit_broken"]?.value as? Bool ?? false
+                    let pending = d["pending_events"]?.value as? Int ?? 0
+                    let delivered = d["total_delivered"]?.value as? Int ?? 0
+                    let failed = d["total_failed"]?.value as? Int ?? 0
+
+                    let status = broken ? "[CIRCUIT BROKEN]" : "[active]"
+                    print("  \(subId)  \(status)")
+                    print("    url: \(url)")
+                    print("    posts/hour: \(postsHour), pending: \(pending), delivered: \(delivered), failed: \(failed)")
+                }
+            }
+
+            if webhookCount == 0 {
+                print("  (no webhook subscriptions)")
+            }
+        }
+    }
+}
+
+struct EventsRecent: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "recent", abstract: "Get recent events (optionally filtered)")
 
     @Option(name: .long, help: "Filter pattern (glob-style, e.g. \"process.*\")")
     var filter: String?

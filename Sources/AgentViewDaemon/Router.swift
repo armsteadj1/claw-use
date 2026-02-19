@@ -28,6 +28,10 @@ final class Router {
         self.processGroup = processGroup
     }
 
+    /// Active webhook deliveries, keyed by subscription ID
+    private var webhookDeliveries: [String: WebhookDelivery] = [:]
+    private let webhookLock = NSLock()
+
     func handle(_ request: JSONRPCRequest) -> JSONRPCResponse {
         let params = request.params ?? [:]
 
@@ -48,6 +52,12 @@ final class Router {
             return handleSubscribe(params: params, id: request.id)
         case "events":
             return handleEvents(params: params, id: request.id)
+        case "events.subscribe.webhook":
+            return handleWebhookSubscribe(params: params, id: request.id)
+        case "events.unsubscribe":
+            return handleWebhookUnsubscribe(params: params, id: request.id)
+        case "events.subscriptions":
+            return handleSubscriptionsList(id: request.id)
         case "web.tabs":
             return handleWebTabs(id: request.id)
         case "web.navigate":
@@ -639,6 +649,106 @@ final class Router {
         let result: [String: AnyCodable] = [
             "processes": AnyCodable(json.map { AnyCodable($0) }),
             "count": AnyCodable(processes.count),
+        ]
+        return JSONRPCResponse(result: AnyCodable(result), id: id)
+    }
+
+    // MARK: - events.subscribe.webhook (webhook delivery)
+
+    private func handleWebhookSubscribe(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        guard let urlStr = params["webhook"]?.value as? String,
+              let url = URL(string: urlStr) else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "events.subscribe.webhook requires 'webhook' (valid URL)"), id: id)
+        }
+
+        let token = params["webhook_token"]?.value as? String
+        let cooldown = (params["cooldown"]?.value as? Int).map { TimeInterval($0) } ?? 300
+        let maxWakes = params["max_wakes"]?.value as? Int ?? 20
+        let verbose = params["verbose"]?.value as? Bool ?? false
+
+        // Parse webhook_meta (JSON string or dict)
+        var meta: [String: AnyCodable] = [:]
+        if let metaDict = params["webhook_meta"]?.value as? [String: AnyCodable] {
+            meta = metaDict
+        } else if let metaStr = params["webhook_meta"]?.value as? String,
+                  let metaData = metaStr.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode([String: AnyCodable].self, from: metaData) {
+            meta = decoded
+        }
+
+        // Parse type filters
+        let filterStr = params["filter"]?.value as? String
+        let typeFilters: Set<String>? = filterStr.map {
+            Set($0.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) })
+        }
+        let appFilter = params["app"]?.value as? String
+
+        let config = WebhookConfig(url: url, token: token, meta: meta,
+                                   cooldown: cooldown, maxWakes: maxWakes, verbose: verbose)
+        let delivery = WebhookDelivery(config: config)
+        delivery.start(eventBus: eventBus, appFilter: appFilter, typeFilters: typeFilters)
+
+        guard let subId = delivery.subId else {
+            return JSONRPCResponse(error: JSONRPCError(code: -20, message: "Failed to create webhook subscription"), id: id)
+        }
+
+        webhookLock.lock()
+        webhookDeliveries[subId] = delivery
+        webhookLock.unlock()
+
+        let result: [String: AnyCodable] = [
+            "subscribed": AnyCodable(true),
+            "subscription_id": AnyCodable(subId),
+            "webhook_url": AnyCodable(urlStr),
+            "cooldown_s": AnyCodable(Int(cooldown)),
+            "max_wakes": AnyCodable(maxWakes),
+            "filter": AnyCodable(filterStr),
+        ]
+        return JSONRPCResponse(result: AnyCodable(result), id: id)
+    }
+
+    // MARK: - events.unsubscribe
+
+    private func handleWebhookUnsubscribe(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        guard let subId = params["subscription_id"]?.value as? String else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "events.unsubscribe requires 'subscription_id'"), id: id)
+        }
+
+        webhookLock.lock()
+        if let delivery = webhookDeliveries.removeValue(forKey: subId) {
+            webhookLock.unlock()
+            delivery.stop()
+            let result: [String: AnyCodable] = [
+                "unsubscribed": AnyCodable(true),
+                "subscription_id": AnyCodable(subId),
+            ]
+            return JSONRPCResponse(result: AnyCodable(result), id: id)
+        }
+        webhookLock.unlock()
+
+        return JSONRPCResponse(error: JSONRPCError(code: -21, message: "Subscription '\(subId)' not found"), id: id)
+    }
+
+    // MARK: - events.subscriptions (list active subscriptions)
+
+    private func handleSubscriptionsList(id: AnyCodable?) -> JSONRPCResponse {
+        webhookLock.lock()
+        let deliveries = webhookDeliveries
+        webhookLock.unlock()
+
+        // Webhook subscriptions
+        let webhookSubs = deliveries.map { (subId, delivery) -> AnyCodable in
+            var info = delivery.info()
+            info["subscription_id"] = AnyCodable(subId)
+            info["type"] = AnyCodable("webhook")
+            return AnyCodable(info)
+        }
+
+        // Streaming subscriptions count from event bus
+        let result: [String: AnyCodable] = [
+            "webhook_subscriptions": AnyCodable(webhookSubs.map { $0 }),
+            "webhook_count": AnyCodable(webhookSubs.count),
+            "total_event_bus_subscribers": AnyCodable(eventBus.subscriberCount),
         ]
         return JSONRPCResponse(result: AnyCodable(result), id: id)
     }

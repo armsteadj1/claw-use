@@ -44,9 +44,6 @@ func setupSignalHandlers(server: Server, screenState: ScreenState, cdpPool: CDPC
 
 log("agentviewd starting...")
 
-// Load configuration
-let agentviewConfig = AgentViewConfig.load()
-
 // Initialize wake client (connects to OpenClaw gateway)
 let wakeClient = WakeClient.fromConfig()
 
@@ -107,17 +104,6 @@ let processGroup = ProcessGroupManager()
 processGroup.cleanupDead()
 processGroup.startListening(eventBus: eventBus)
 log("ProcessGroup: \(processGroup.count) processes loaded, dead PIDs cleaned")
-
-// Initialize event file writer (OpenClaw polling integration)
-let eventFileConfig = agentviewConfig.resolvedEventFile
-let eventFileWriter = EventFileWriter(config: eventFileConfig)
-eventFileWriter.start(eventBus: eventBus)
-if eventFileConfig.enabled {
-    log("EventFileWriter: enabled, writing to \(eventFileConfig.path)")
-    log("  priority events: \(eventFileConfig.priority.sorted().joined(separator: ", "))")
-} else {
-    log("EventFileWriter: disabled (set eventFile.enabled=true in config.json)")
-}
 
 let router = Router(screenState: screenState, cdpPool: cdpPool, transportRouter: transportRouter,
                     snapshotCache: snapshotCache, eventBus: eventBus, safariTransport: safariTransport,
