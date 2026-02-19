@@ -99,11 +99,11 @@ public struct WebElementMatcher {
 
     /// JS script that fuzzy-matches and fills a form field
     public static func fillScript(match: String, value: String) -> String {
-        return """
+        return #"""
         (function() {
-            var match = '\(match)'.toLowerCase();
-            var fillValue = '\(value)';
-            var els = document.querySelectorAll('input, textarea, select, [contenteditable="true"]');
+            var match = '\#(match)'.toLowerCase();
+            var fillValue = '\#(value)';
+            var els = document.querySelectorAll('input, textarea, select, [contenteditable]');
             var best = null;
             var bestScore = 0;
             for (var i = 0; i < els.length; i++) {
@@ -118,7 +118,7 @@ public struct WebElementMatcher {
                 var type = (el.getAttribute('type') || '').toLowerCase();
                 var labelText = '';
                 if (el.id) {
-                    var lbl = document.querySelector('label[for="' + el.id + '"]');
+                    var lbl = document.querySelector('label[for=' + JSON.stringify(el.id) + ']');
                     if (lbl) labelText = (lbl.innerText || '').toLowerCase().trim();
                 }
                 if (!labelText) {
@@ -148,14 +148,18 @@ public struct WebElementMatcher {
                             break;
                         }
                     }
-                } else if (best.getAttribute('contenteditable') === 'true') {
+                } else if (best.getAttribute('contenteditable')) {
                     best.innerText = fillValue;
                 } else {
-                    var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') ||
-                                       Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
-                    if (nativeSetter && nativeSetter.set) {
-                        nativeSetter.set.call(best, fillValue);
-                    } else {
+                    try {
+                        var proto = best instanceof HTMLTextAreaElement ? HTMLTextAreaElement : HTMLInputElement;
+                        var nativeSetter = Object.getOwnPropertyDescriptor(proto.prototype, 'value');
+                        if (nativeSetter && nativeSetter.set) {
+                            nativeSetter.set.call(best, fillValue);
+                        } else {
+                            best.value = fillValue;
+                        }
+                    } catch(e) {
                         best.value = fillValue;
                     }
                 }
@@ -166,7 +170,7 @@ public struct WebElementMatcher {
             }
             return JSON.stringify({success: false, error: 'No input matching: ' + match});
         })()
-        """
+        """#
     }
 
     // MARK: - Pure Swift fuzzy matching (for non-JS contexts)

@@ -319,21 +319,36 @@ public final class SafariTransport: Transport {
             return TransportResult(success: false, data: nil, error: "JS execution requires expression", transportUsed: name)
         }
 
-        let escapedExpr = expr
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+        // Write JS to temp file to avoid AppleScript string escaping hell
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let tmpJSFile = "/tmp/agentview-js-\(pid).js"
+        let tmpScriptFile = "/tmp/agentview-scpt-\(pid).applescript"
+        do {
+            try expr.write(toFile: tmpJSFile, atomically: true, encoding: .utf8)
+            let scpt = """
+            set jsCode to read (POSIX file "\(tmpJSFile)") as «class utf8»
+            tell application "Safari"
+                try
+                    set jsResult to (do JavaScript jsCode in current tab of window 1)
+                    if jsResult is missing value then
+                        return ""
+                    end if
+                    return jsResult as text
+                on error errMsg
+                    return "AGENTVIEW_JS_ERROR:" & errMsg
+                end try
+            end tell
+            """
+            try scpt.write(toFile: tmpScriptFile, atomically: true, encoding: .utf8)
+        } catch {
+            return TransportResult(success: false, data: nil, error: "Failed to write temp files: \(error)", transportUsed: name)
+        }
+        defer {
+            // skip cleanup
+            // skip cleanup
+        }
 
-        let script = """
-        tell application "Safari"
-            set jsResult to (do JavaScript "\(escapedExpr)" in current tab of window 1)
-            if jsResult is missing value then
-                return ""
-            end if
-            return jsResult as text
-        end tell
-        """
-
-        let result = runOsascript(script: script, timeout: timeout)
+        let result = runOsascriptFile(path: tmpScriptFile, timeout: timeout)
         return result
     }
 
@@ -407,8 +422,6 @@ public final class SafariTransport: Transport {
         }
 
         let escapedMatch = match
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "'", with: "\\'")
 
         let js = WebElementMatcher.clickScript(match: escapedMatch)
@@ -425,13 +438,9 @@ public final class SafariTransport: Transport {
         }
 
         let escapedMatch = match
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "'", with: "\\'")
 
         let escapedValue = value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "'", with: "\\'")
 
         let js = WebElementMatcher.fillScript(match: escapedMatch, value: escapedValue)
@@ -488,6 +497,60 @@ public final class SafariTransport: Transport {
     }
 
     // MARK: - osascript Execution
+
+    private func runOsascriptFile(path: String, timeout: Int) -> TransportResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = [path]
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+
+        do {
+            try process.run()
+        } catch {
+            return TransportResult(
+                success: false, data: nil,
+                error: "Failed to launch osascript: \(error)",
+                transportUsed: name
+            )
+        }
+
+        let deadline = DispatchTime.now() + .seconds(timeout)
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async {
+            process.waitUntilExit()
+            group.leave()
+        }
+
+        if group.wait(timeout: deadline) == .timedOut {
+            process.terminate()
+            return TransportResult(
+                success: false, data: nil,
+                error: "Safari AppleScript timed out after \(timeout)s",
+                transportUsed: name
+            )
+        }
+
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        let stdout = String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let stderr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if process.terminationStatus != 0 {
+            return TransportResult(
+                success: false, data: nil,
+                error: stderr.isEmpty ? "osascript exited with code \(process.terminationStatus)" : stderr,
+                transportUsed: name
+            )
+        }
+
+        let output: [String: AnyCodable] = ["result": AnyCodable(stdout)]
+        return TransportResult(success: true, data: output, error: nil, transportUsed: name)
+    }
 
     private func runOsascript(script: String, timeout: Int) -> TransportResult {
         let process = Process()

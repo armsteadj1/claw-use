@@ -100,7 +100,7 @@ public enum PageAnalyzer {
         var mainEl = document.querySelector('main, article, [role="main"], .content, #content');
         if (!mainEl) mainEl = document.body;
         var textContent = mainEl.innerText || mainEl.textContent || '';
-        result.mainContent = textContent.substring(0, 2000).trim();
+        result.mainContent = textContent.substring(0, 1000).trim();
 
         // Reading time estimate
         var wordCount = textContent.split(/\s+/).length;
