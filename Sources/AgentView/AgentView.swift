@@ -40,6 +40,44 @@ private func printResponse(_ response: JSONRPCResponse, pretty: Bool) throws {
     print(String(data: data, encoding: .utf8)!)
 }
 
+/// Print a daemon response with format + pagination support.
+/// If format is "compact", the `compactFn` closure is called with the decoded dict to produce compact output.
+/// If format is "json", adds pagination metadata to the JSON if present.
+private func printFormattedResponse(
+    _ response: JSONRPCResponse,
+    format: String,
+    pretty: Bool,
+    pagination: PaginationResult? = nil,
+    compactFn: (([String: AnyCodable], PaginationResult?) -> String)? = nil
+) throws {
+    if let error = response.error {
+        fputs("Error: \(error.message)\n", stderr)
+        throw ExitCode.failure
+    }
+    guard let result = response.result else {
+        if format == "compact" { print("(empty)") } else { print("{}") }
+        return
+    }
+
+    if format == "compact", let dict = result.value as? [String: AnyCodable], let fn = compactFn {
+        print(fn(dict, pagination))
+    } else {
+        // JSON mode — inject pagination if present
+        if let pagination = pagination, var dict = result.value as? [String: AnyCodable] {
+            for (k, v) in pagination.jsonDict {
+                dict[k] = v
+            }
+            let enc = pretty ? JSONOutput.prettyEncoder : JSONOutput.encoder
+            let data = try enc.encode(AnyCodable(dict))
+            print(String(data: data, encoding: .utf8)!)
+        } else {
+            let enc = pretty ? JSONOutput.prettyEncoder : JSONOutput.encoder
+            let data = try enc.encode(result)
+            print(String(data: data, encoding: .utf8)!)
+        }
+    }
+}
+
 // MARK: - daemon
 
 struct Daemon: ParsableCommand {
@@ -103,12 +141,17 @@ struct DaemonStatus: ParsableCommand {
 struct Status: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Full system status (daemon, screen, CDP)")
 
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
     func run() throws {
         let response = try callDaemon(method: "status")
-        try printResponse(response, pretty: pretty)
+        try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
+            CompactFormatter.formatStatus(data: dict)
+        }
     }
 }
 
@@ -119,6 +162,9 @@ struct List: ParsableCommand {
         abstract: "List all running GUI apps"
     )
 
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
@@ -126,13 +172,37 @@ struct List: ParsableCommand {
         // Try daemon first
         do {
             let response = try callDaemon(method: "list")
-            try printResponse(response, pretty: pretty)
+            if format == "compact" {
+                // Decode the list response into AppInfo array
+                if let error = response.error {
+                    fputs("Error: \(error.message)\n", stderr)
+                    throw ExitCode.failure
+                }
+                if let result = response.result, let arr = result.value as? [AnyCodable] {
+                    let apps = arr.compactMap { item -> AppInfo? in
+                        guard let dict = item.value as? [String: AnyCodable] else { return nil }
+                        let name = dict["name"]?.value as? String ?? ""
+                        let pid = dict["pid"]?.value as? Int ?? 0
+                        let bundleId = dict["bundle_id"]?.value as? String ?? dict["bundleId"]?.value as? String
+                        return AppInfo(name: name, pid: Int32(pid), bundleId: bundleId)
+                    }
+                    print(CompactFormatter.formatList(apps: apps))
+                } else {
+                    print("Apps (0):")
+                }
+            } else {
+                try printResponse(response, pretty: pretty)
+            }
             return
         } catch {}
 
         // Fallback: direct
         let apps = AXBridge.listApps()
-        try JSONOutput.print(apps, pretty: pretty)
+        if format == "compact" {
+            print(CompactFormatter.formatList(apps: apps))
+        } else {
+            try JSONOutput.print(apps, pretty: pretty)
+        }
     }
 }
 
@@ -194,6 +264,15 @@ struct Snapshot: ParsableCommand {
     @Option(name: .long, help: "Max tree depth (default: 50)")
     var depth: Int = 50
 
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
+    @Option(name: .long, help: "Continue from cursor position (e.g. e50)")
+    var after: String?
+
+    @Option(name: .long, help: "Max elements per page (default: 50)")
+    var limit: Int = PaginationDefaults.axSnapshotLimit
+
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
@@ -205,7 +284,51 @@ struct Snapshot: ParsableCommand {
             if let pid = pid { params["pid"] = AnyCodable(Int(pid)) }
             params["depth"] = AnyCodable(depth)
             let response = try callDaemon(method: "snapshot", params: params)
-            try printResponse(response, pretty: pretty)
+
+            if format == "compact" {
+                if let error = response.error {
+                    fputs("Error: \(error.message)\n", stderr)
+                    throw ExitCode.failure
+                }
+                // Daemon returns JSON; decode into AppSnapshot for compact format
+                if let result = response.result {
+                    let enc = JSONOutput.encoder
+                    let data = try enc.encode(result)
+                    let decoder = JSONDecoder()
+                    decoder.keyDecodingStrategy = .convertFromSnakeCase
+                    let snapshot = try decoder.decode(AppSnapshot.self, from: data)
+                    let pagParams = PaginationParams(after: after, limit: limit)
+                    let (paginated, pagResult) = Paginator.paginateSnapshot(snapshot, params: pagParams)
+                    print(CompactFormatter.formatSnapshot(snapshot: paginated, pagination: pagResult))
+                } else {
+                    print("(empty)")
+                }
+            } else {
+                // JSON mode — still paginate
+                if let result = response.result {
+                    let enc = JSONOutput.encoder
+                    let data = try enc.encode(result)
+                    let decoder = JSONDecoder()
+                    decoder.keyDecodingStrategy = .convertFromSnakeCase
+                    let snapshot = try decoder.decode(AppSnapshot.self, from: data)
+                    let pagParams = PaginationParams(after: after, limit: limit)
+                    let (paginated, pagResult) = Paginator.paginateSnapshot(snapshot, params: pagParams)
+                    // Encode paginated snapshot with pagination metadata
+                    let outEnc = pretty ? JSONOutput.prettyEncoder : JSONOutput.encoder
+                    var snapshotData = try outEnc.encode(paginated)
+                    // Append pagination info
+                    if var dict = try JSONSerialization.jsonObject(with: snapshotData) as? [String: Any] {
+                        dict["truncated"] = pagResult.hasMore
+                        dict["total"] = pagResult.total
+                        dict["returned"] = pagResult.returned
+                        if let cursor = pagResult.cursor { dict["cursor"] = cursor }
+                        snapshotData = try JSONSerialization.data(withJSONObject: dict, options: pretty ? [.prettyPrinted, .sortedKeys] : [.sortedKeys])
+                    }
+                    print(String(data: snapshotData, encoding: .utf8)!)
+                } else {
+                    try printResponse(response, pretty: pretty)
+                }
+            }
             return
         } catch {}
 
@@ -223,7 +346,15 @@ struct Snapshot: ParsableCommand {
         let enricher = Enricher()
         let refMap = RefMap()
         let snapshot = enricher.snapshot(app: runningApp, maxDepth: depth, refMap: refMap)
-        try JSONOutput.print(snapshot, pretty: pretty)
+
+        let pagParams = PaginationParams(after: after, limit: limit)
+        let (paginated, pagResult) = Paginator.paginateSnapshot(snapshot, params: pagParams)
+
+        if format == "compact" {
+            print(CompactFormatter.formatSnapshot(snapshot: paginated, pagination: pagResult))
+        } else {
+            try JSONOutput.print(paginated, pretty: pretty)
+        }
     }
 }
 
@@ -258,6 +389,9 @@ struct Act: ParsableCommand {
     @Option(name: .long, help: "App PID")
     var pid: Int32?
 
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
@@ -275,7 +409,9 @@ struct Act: ParsableCommand {
             params["port"] = AnyCodable(port)
             params["timeout"] = AnyCodable(timeout)
             let response = try callDaemon(method: "act", params: params)
-            try printResponse(response, pretty: pretty)
+            try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
+                CompactFormatter.formatActResult(data: dict)
+            }
             return
         } catch {}
 
@@ -333,7 +469,11 @@ struct Act: ParsableCommand {
                     "action": AnyCodable("script"),
                     "error": AnyCodable("AppleScript timed out after \(timeoutSeconds)s."),
                 ]
-                try JSONOutput.print(output, pretty: pretty)
+                if format == "compact" {
+                    print(CompactFormatter.formatActResult(data: output))
+                } else {
+                    try JSONOutput.print(output, pretty: pretty)
+                }
                 throw ExitCode.failure
             }
 
@@ -350,7 +490,11 @@ struct Act: ParsableCommand {
                     "action": AnyCodable("script"),
                     "error": AnyCodable(stderr_str.isEmpty ? "AppleScript failed with exit code \(process.terminationStatus)" : stderr_str),
                 ]
-                try JSONOutput.print(output, pretty: pretty)
+                if format == "compact" {
+                    print(CompactFormatter.formatActResult(data: output))
+                } else {
+                    try JSONOutput.print(output, pretty: pretty)
+                }
                 throw ExitCode.failure
             }
 
@@ -361,7 +505,11 @@ struct Act: ParsableCommand {
                 "action": AnyCodable("script"),
                 "result": AnyCodable(stdout),
             ]
-            try JSONOutput.print(output, pretty: pretty)
+            if format == "compact" {
+                print(CompactFormatter.formatActResult(data: output))
+            } else {
+                try JSONOutput.print(output, pretty: pretty)
+            }
             return
         }
 
@@ -391,7 +539,11 @@ struct Act: ParsableCommand {
                     "action": AnyCodable("eval"),
                     "result": AnyCodable(evalResult ?? "undefined"),
                 ]
-                try JSONOutput.print(output, pretty: pretty)
+                if format == "compact" {
+                    print(CompactFormatter.formatActResult(data: output))
+                } else {
+                    try JSONOutput.print(output, pretty: pretty)
+                }
             } catch {
                 let output = ActionResultOutput(success: false, error: "CDP eval failed: \(error)", snapshot: nil)
                 try JSONOutput.print(output, pretty: pretty)
@@ -411,7 +563,18 @@ struct Act: ParsableCommand {
 
         let executor = ActionExecutor(refMap: refMap)
         let result = executor.execute(action: actionType, ref: ref, value: value, on: runningApp, enricher: enricher)
-        try JSONOutput.print(result, pretty: pretty)
+
+        if format == "compact" {
+            let output: [String: AnyCodable] = [
+                "success": AnyCodable(result.success),
+                "app": AnyCodable(runningApp.localizedName ?? "Unknown"),
+                "action": AnyCodable(action),
+                "error": AnyCodable(result.error as Any),
+            ]
+            print(CompactFormatter.formatActResult(data: output))
+        } else {
+            try JSONOutput.print(result, pretty: pretty)
+        }
         if !result.success { throw ExitCode.failure }
     }
 }
@@ -668,6 +831,9 @@ struct Pipe: ParsableCommand {
     @Option(name: .long, help: "App PID")
     var pid: Int32?
 
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
     @Flag(name: .long, help: "Include full snapshot in output")
     var includeSnapshot: Bool = false
 
@@ -688,7 +854,9 @@ struct Pipe: ParsableCommand {
             params["port"] = AnyCodable(port)
             params["timeout"] = AnyCodable(timeout)
             let response = try callDaemon(method: "pipe", params: params)
-            try printResponse(response, pretty: pretty)
+            try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
+                CompactFormatter.formatActResult(data: dict)
+            }
             return
         } catch {}
 
@@ -701,6 +869,7 @@ struct Pipe: ParsableCommand {
             actCmd.port = port
             actCmd.timeout = timeout
             actCmd.pid = pid
+            actCmd.format = format
             actCmd.pretty = pretty
             try actCmd.run()
             return
@@ -757,7 +926,11 @@ struct Pipe: ParsableCommand {
                 "error": AnyCodable("No element matching '\(matchStr)' found."),
                 "app": AnyCodable(snapshot.app),
             ]
-            try JSONOutput.print(output, pretty: pretty)
+            if format == "compact" {
+                print(CompactFormatter.formatActResult(data: output))
+            } else {
+                try JSONOutput.print(output, pretty: pretty)
+            }
             throw ExitCode.failure
         }
 
@@ -770,7 +943,11 @@ struct Pipe: ParsableCommand {
                 "matched_label": AnyCodable(matched.label),
                 "match_score": AnyCodable(matched.score),
             ]
-            try JSONOutput.print(output, pretty: pretty)
+            if format == "compact" {
+                print(CompactFormatter.formatActResult(data: output))
+            } else {
+                try JSONOutput.print(output, pretty: pretty)
+            }
             return
         }
 
@@ -793,7 +970,11 @@ struct Pipe: ParsableCommand {
         if let err = result.error {
             output["error"] = AnyCodable(err)
         }
-        try JSONOutput.print(output, pretty: pretty)
+        if format == "compact" {
+            print(CompactFormatter.formatActResult(data: output))
+        } else {
+            try JSONOutput.print(output, pretty: pretty)
+        }
         if !result.success { throw ExitCode.failure }
     }
 
@@ -854,12 +1035,17 @@ struct Web: ParsableCommand {
 struct WebTabs: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "tabs", abstract: "List all open Safari tabs")
 
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
     func run() throws {
         let response = try callDaemon(method: "web.tabs")
-        try printResponse(response, pretty: pretty)
+        try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
+            CompactFormatter.formatWebTabs(data: dict)
+        }
     }
 }
 
@@ -882,12 +1068,41 @@ struct WebNavigate: ParsableCommand {
 struct WebSnapshot: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "snapshot", abstract: "Semantic snapshot of the current Safari page")
 
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
+    @Option(name: .long, help: "Continue from cursor position (link offset)")
+    var after: String?
+
+    @Option(name: .long, help: "Max links per page (default: 15)")
+    var limit: Int = PaginationDefaults.webSnapshotLimit
+
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
     func run() throws {
         let response = try callDaemon(method: "web.snapshot")
-        try printResponse(response, pretty: pretty)
+        if let error = response.error {
+            fputs("Error: \(error.message)\n", stderr)
+            throw ExitCode.failure
+        }
+        guard let result = response.result, let dict = result.value as? [String: AnyCodable] else {
+            if format == "compact" { print("(empty)") } else { print("{}") }
+            return
+        }
+
+        let pagParams = PaginationParams(after: after, limit: limit)
+        let (paginated, pagResult) = Paginator.paginateWebSnapshot(dict, params: pagParams)
+
+        if format == "compact" {
+            print(CompactFormatter.formatWebSnapshot(data: paginated, pagination: pagResult))
+        } else {
+            var output = paginated
+            for (k, v) in pagResult.jsonDict { output[k] = v }
+            let enc = pretty ? JSONOutput.prettyEncoder : JSONOutput.encoder
+            let data = try enc.encode(AnyCodable(output))
+            print(String(data: data, encoding: .utf8)!)
+        }
     }
 }
 
@@ -932,12 +1147,41 @@ struct WebFill: ParsableCommand {
 struct WebExtract: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "extract", abstract: "Extract page content as markdown")
 
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
+    @Option(name: .long, help: "Continue from cursor position (char offset)")
+    var after: String?
+
+    @Option(name: .long, help: "Max chars per chunk (default: 2000)")
+    var limit: Int = PaginationDefaults.webExtractLimit
+
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
     func run() throws {
         let response = try callDaemon(method: "web.extract")
-        try printResponse(response, pretty: pretty)
+        if let error = response.error {
+            fputs("Error: \(error.message)\n", stderr)
+            throw ExitCode.failure
+        }
+        guard let result = response.result, let dict = result.value as? [String: AnyCodable] else {
+            if format == "compact" { print("(empty)") } else { print("{}") }
+            return
+        }
+
+        let pagParams = PaginationParams(after: after, limit: limit)
+        let (paginated, pagResult) = Paginator.paginateWebExtract(dict, params: pagParams)
+
+        if format == "compact" {
+            print(CompactFormatter.formatWebExtract(data: paginated, pagination: pagResult))
+        } else {
+            var output = paginated
+            for (k, v) in pagResult.jsonDict { output[k] = v }
+            let enc = pretty ? JSONOutput.prettyEncoder : JSONOutput.encoder
+            let data = try enc.encode(AnyCodable(output))
+            print(String(data: data, encoding: .utf8)!)
+        }
     }
 }
 
@@ -970,6 +1214,9 @@ struct Screenshot: ParsableCommand {
     @Option(name: .long, help: "Output file path (default: /tmp/agentview-screenshot-<app>-<timestamp>.png)")
     var output: String?
 
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
@@ -979,13 +1226,19 @@ struct Screenshot: ParsableCommand {
             var params: [String: AnyCodable] = ["app": AnyCodable(app)]
             if let output = output { params["output"] = AnyCodable(output) }
             let response = try callDaemon(method: "screenshot", params: params)
-            try printResponse(response, pretty: pretty)
+            try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
+                CompactFormatter.formatScreenshotDict(data: dict)
+            }
             return
         } catch {}
 
         // Fallback: direct
         let result = ScreenCapture.capture(appName: app, outputPath: output)
-        try JSONOutput.print(result, pretty: pretty)
+        if format == "compact" {
+            print(CompactFormatter.formatScreenshot(data: result))
+        } else {
+            try JSONOutput.print(result, pretty: pretty)
+        }
         if !result.success { throw ExitCode.failure }
     }
 }

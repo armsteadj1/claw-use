@@ -1360,7 +1360,7 @@ final class MockTransport: Transport {
 
 @Test func pageAnalyzerAnalysisScriptLimitsMainContent() {
     let script = PageAnalyzer.analysisScript
-    #expect(script.contains("substring(0, 2000)"))
+    #expect(script.contains("substring(0, 1000)"))
     #expect(!script.contains("substring(0, 5000)"))
 }
 
@@ -1460,4 +1460,405 @@ func makeTestElement(ref: String, role: String, label: String) -> Element {
         selected: false,
         actions: ["click"]
     )
+}
+
+// MARK: - CompactFormatter Tests
+
+@Test func compactFormatterFormatList() {
+    let apps = [
+        AppInfo(name: "Finder", pid: 100, bundleId: "com.apple.finder"),
+        AppInfo(name: "Safari", pid: 200, bundleId: "com.apple.Safari"),
+        AppInfo(name: "Terminal", pid: 300, bundleId: "com.apple.Terminal"),
+    ]
+    let result = CompactFormatter.formatList(apps: apps)
+    #expect(result == "Apps (3): Finder, Safari, Terminal")
+}
+
+@Test func compactFormatterFormatListEmpty() {
+    let result = CompactFormatter.formatList(apps: [])
+    #expect(result == "Apps (0): ")
+}
+
+@Test func compactFormatterFormatSnapshot() {
+    let snapshot = AppSnapshot(
+        app: "Safari",
+        bundleId: "com.apple.Safari",
+        pid: 200,
+        timestamp: "2024-01-01T00:00:00Z",
+        window: WindowInfo(title: "OpenClaw - OpenClaw", size: nil, focused: true),
+        meta: ["transport": AnyCodable("ax")],
+        content: ContentTree(
+            summary: nil,
+            sections: [
+                Section(role: "toolbar", label: "toolbar", elements: [
+                    Element(ref: "e1", role: "button", label: "Go back", value: nil,
+                            placeholder: nil, enabled: false, focused: false, selected: false, actions: ["click"]),
+                    Element(ref: "e2", role: "textfield", label: "search", value: AnyCodable("https://example.com"),
+                            placeholder: nil, enabled: true, focused: false, selected: false, actions: ["fill"]),
+                ]),
+                Section(role: "navigation", label: "tabs", elements: [
+                    Element(ref: "e3", role: "tab", label: "GitHub", value: nil,
+                            placeholder: nil, enabled: true, focused: false, selected: true, actions: ["select"]),
+                ]),
+            ]
+        ),
+        actions: [],
+        stats: SnapshotStats(totalNodes: 10, prunedNodes: 5, enrichedElements: 3, walkTimeMs: 10, enrichTimeMs: 5)
+    )
+
+    let result = CompactFormatter.formatSnapshot(snapshot: snapshot)
+    #expect(result.contains("[Safari] OpenClaw - OpenClaw"))
+    #expect(result.contains("3 elements"))
+    #expect(result.contains("ax transport"))
+    #expect(result.contains("[e1] Go back btn (disabled)"))
+    #expect(result.contains("[e2] search field"))
+    #expect(result.contains("\"https://example.com\""))
+    #expect(result.contains("[e3] GitHub tab"))
+    #expect(result.contains("more: false"))
+}
+
+@Test func compactFormatterFormatSnapshotWithPagination() {
+    let snapshot = makeTestSnapshot(app: "TestApp")
+    let pagination = PaginationResult(hasMore: true, cursor: "e50", total: 100, returned: 50)
+    let result = CompactFormatter.formatSnapshot(snapshot: snapshot, pagination: pagination)
+    #expect(result.contains("more: true | cursor: e50"))
+}
+
+@Test func compactFormatterFormatWebTabs() {
+    let data: [String: AnyCodable] = [
+        "app": AnyCodable("Safari"),
+        "tabs": AnyCodable([
+            AnyCodable(["title": AnyCodable("GitHub"), "url": AnyCodable("https://github.com"), "active": AnyCodable(false)] as [String: AnyCodable]),
+            AnyCodable(["title": AnyCodable("OpenClaw"), "url": AnyCodable("https://docs.openclaw.ai"), "active": AnyCodable(true)] as [String: AnyCodable]),
+        ]),
+    ]
+    let result = CompactFormatter.formatWebTabs(data: data)
+    #expect(result.contains("Safari tabs (2):"))
+    #expect(result.contains("1. GitHub — github.com"))
+    #expect(result.contains("2. OpenClaw — docs.openclaw.ai (active)"))
+}
+
+@Test func compactFormatterFormatWebExtract() {
+    let data: [String: AnyCodable] = [
+        "content": AnyCodable("# Example Domain\n\nThis domain is for use in documentation examples..."),
+    ]
+    let result = CompactFormatter.formatWebExtract(data: data)
+    #expect(result.contains("# Example Domain"))
+    #expect(result.contains("---"))
+    #expect(result.contains("chars"))
+    #expect(result.contains("more: false"))
+}
+
+@Test func compactFormatterFormatScreenshot() {
+    let data = ScreenCaptureResult(success: true, path: "/tmp/agentview-screenshot-safari-1234567.png", width: 1325, height: 941, error: nil)
+    let result = CompactFormatter.formatScreenshot(data: data)
+    #expect(result.contains("1325x941"))
+    #expect(result.contains("/tmp/agentview-screenshot-safari-1234567.png"))
+}
+
+@Test func compactFormatterFormatScreenshotError() {
+    let data = ScreenCaptureResult(success: false, path: nil, width: nil, height: nil, error: "No window found")
+    let result = CompactFormatter.formatScreenshot(data: data)
+    #expect(result.contains("error: No window found"))
+}
+
+@Test func compactFormatterFormatActResult() {
+    let data: [String: AnyCodable] = [
+        "success": AnyCodable(true),
+        "app": AnyCodable("Safari"),
+        "action": AnyCodable("click"),
+        "matched_ref": AnyCodable("e5"),
+        "matched_label": AnyCodable("Submit"),
+    ]
+    let result = CompactFormatter.formatActResult(data: data)
+    #expect(result.contains("[Safari] click: ok"))
+    #expect(result.contains("ref=e5"))
+    #expect(result.contains("\"Submit\""))
+}
+
+@Test func compactFormatterFormatActResultError() {
+    let data: [String: AnyCodable] = [
+        "success": AnyCodable(false),
+        "app": AnyCodable("Safari"),
+        "action": AnyCodable("click"),
+        "error": AnyCodable("Element not found"),
+    ]
+    let result = CompactFormatter.formatActResult(data: data)
+    #expect(result.contains("[Safari] click: failed"))
+    #expect(result.contains("Element not found"))
+}
+
+@Test func compactFormatterRoleAbbreviations() {
+    // Test that the snapshot formatter abbreviates roles correctly
+    let snapshot = AppSnapshot(
+        app: "Test",
+        bundleId: nil,
+        pid: 1,
+        timestamp: "2024-01-01T00:00:00Z",
+        window: WindowInfo(title: "Win", size: nil, focused: true),
+        meta: [:],
+        content: ContentTree(summary: nil, sections: [
+            Section(role: "content", label: "content", elements: [
+                Element(ref: "e1", role: "button", label: "OK", value: nil,
+                        placeholder: nil, enabled: true, focused: false, selected: false, actions: ["click"]),
+                Element(ref: "e2", role: "checkbox", label: "Enable", value: nil,
+                        placeholder: nil, enabled: true, focused: false, selected: false, actions: ["toggle"]),
+                Element(ref: "e3", role: "radio", label: "Option A", value: nil,
+                        placeholder: nil, enabled: true, focused: false, selected: false, actions: ["select"]),
+            ]),
+        ]),
+        actions: [],
+        stats: SnapshotStats(totalNodes: 3, prunedNodes: 0, enrichedElements: 3, walkTimeMs: 1, enrichTimeMs: 1)
+    )
+    let result = CompactFormatter.formatSnapshot(snapshot: snapshot)
+    #expect(result.contains("[e1] OK btn"))
+    #expect(result.contains("[e2] Enable chk"))
+    #expect(result.contains("[e3] Option A radio"))
+}
+
+// MARK: - PaginationParams Tests
+
+@Test func paginationParamsAfterRefNumber() {
+    let params = PaginationParams(after: "e50", limit: 50)
+    #expect(params.afterRefNumber == 50)
+}
+
+@Test func paginationParamsAfterRefNumberNil() {
+    let params = PaginationParams(after: nil, limit: 50)
+    #expect(params.afterRefNumber == nil)
+}
+
+@Test func paginationParamsAfterOffset() {
+    let params = PaginationParams(after: "15", limit: 15)
+    #expect(params.afterOffset == 15)
+}
+
+@Test func paginationParamsAfterOffsetFromRef() {
+    let params = PaginationParams(after: "e50", limit: 50)
+    // "e50" is not a plain int, so afterOffset should be nil
+    #expect(params.afterOffset == nil)
+}
+
+// MARK: - PaginationResult Tests
+
+@Test func paginationResultCompactLineMore() {
+    let result = PaginationResult(hasMore: true, cursor: "e50", total: 100, returned: 50)
+    #expect(result.compactLine == "more: true | cursor: e50")
+}
+
+@Test func paginationResultCompactLineNoMore() {
+    let result = PaginationResult(hasMore: false, total: 30, returned: 30)
+    #expect(result.compactLine == "more: false")
+}
+
+@Test func paginationResultJsonDict() {
+    let result = PaginationResult(hasMore: true, cursor: "e50", total: 100, returned: 50)
+    let dict = result.jsonDict
+    #expect(dict["truncated"]?.value as? Bool == true)
+    #expect(dict["total"]?.value as? Int == 100)
+    #expect(dict["returned"]?.value as? Int == 50)
+    #expect(dict["cursor"]?.value as? String == "e50")
+}
+
+@Test func paginationResultJsonDictNoCursor() {
+    let result = PaginationResult(hasMore: false, total: 30, returned: 30)
+    let dict = result.jsonDict
+    #expect(dict["truncated"]?.value as? Bool == false)
+    #expect(dict["cursor"] == nil)
+}
+
+// MARK: - PaginationDefaults Tests
+
+@Test func paginationDefaultValues() {
+    #expect(PaginationDefaults.axSnapshotLimit == 50)
+    #expect(PaginationDefaults.webSnapshotLimit == 15)
+    #expect(PaginationDefaults.webExtractLimit == 2000)
+}
+
+// MARK: - Paginator AX Snapshot Tests
+
+@Test func paginatorSnapshotFirstPage() {
+    let snapshot = makeSnapshotWithElements(count: 100)
+    let params = PaginationParams(after: nil, limit: 50)
+    let (paginated, result) = Paginator.paginateSnapshot(snapshot, params: params)
+
+    let totalPagElements = paginated.content.sections.flatMap { $0.elements }.count
+    #expect(totalPagElements == 50)
+    #expect(result.hasMore == true)
+    #expect(result.cursor == "e50")
+    #expect(result.total == 100)
+    #expect(result.returned == 50)
+}
+
+@Test func paginatorSnapshotSecondPage() {
+    let snapshot = makeSnapshotWithElements(count: 100)
+    let params = PaginationParams(after: "e50", limit: 50)
+    let (paginated, result) = Paginator.paginateSnapshot(snapshot, params: params)
+
+    let totalPagElements = paginated.content.sections.flatMap { $0.elements }.count
+    #expect(totalPagElements == 50)
+    #expect(result.hasMore == false)
+    #expect(result.cursor == nil)
+    #expect(result.total == 100)
+    #expect(result.returned == 50)
+}
+
+@Test func paginatorSnapshotSmallSet() {
+    let snapshot = makeSnapshotWithElements(count: 10)
+    let params = PaginationParams(after: nil, limit: 50)
+    let (paginated, result) = Paginator.paginateSnapshot(snapshot, params: params)
+
+    let totalPagElements = paginated.content.sections.flatMap { $0.elements }.count
+    #expect(totalPagElements == 10)
+    #expect(result.hasMore == false)
+    #expect(result.cursor == nil)
+    #expect(result.total == 10)
+    #expect(result.returned == 10)
+}
+
+@Test func paginatorSnapshotCustomLimit() {
+    let snapshot = makeSnapshotWithElements(count: 30)
+    let params = PaginationParams(after: nil, limit: 10)
+    let (paginated, result) = Paginator.paginateSnapshot(snapshot, params: params)
+
+    let totalPagElements = paginated.content.sections.flatMap { $0.elements }.count
+    #expect(totalPagElements == 10)
+    #expect(result.hasMore == true)
+    #expect(result.cursor == "e10")
+    #expect(result.total == 30)
+}
+
+// MARK: - Paginator Web Snapshot Tests
+
+@Test func paginatorWebSnapshotFirstPage() {
+    let data = makeWebSnapshotData(linkCount: 30)
+    let params = PaginationParams(after: nil, limit: 15)
+    let (paginated, result) = Paginator.paginateWebSnapshot(data, params: params)
+
+    let links = paginated["links"]?.value as? [AnyCodable] ?? []
+    #expect(links.count == 15)
+    #expect(result.hasMore == true)
+    #expect(result.cursor == "15")
+    #expect(result.total == 30)
+}
+
+@Test func paginatorWebSnapshotSecondPage() {
+    let data = makeWebSnapshotData(linkCount: 30)
+    let params = PaginationParams(after: "15", limit: 15)
+    let (paginated, result) = Paginator.paginateWebSnapshot(data, params: params)
+
+    let links = paginated["links"]?.value as? [AnyCodable] ?? []
+    #expect(links.count == 15)
+    #expect(result.hasMore == false)
+    #expect(result.cursor == nil)
+    #expect(result.total == 30)
+}
+
+@Test func paginatorWebSnapshotSmallSet() {
+    let data = makeWebSnapshotData(linkCount: 5)
+    let params = PaginationParams(after: nil, limit: 15)
+    let (_, result) = Paginator.paginateWebSnapshot(data, params: params)
+
+    #expect(result.hasMore == false)
+    #expect(result.total == 5)
+    #expect(result.returned == 5)
+}
+
+// MARK: - Paginator Web Extract Tests
+
+@Test func paginatorWebExtractFirstChunk() {
+    let content = String(repeating: "a", count: 5000)
+    let data: [String: AnyCodable] = ["content": AnyCodable(content)]
+    let params = PaginationParams(after: nil, limit: 2000)
+    let (paginated, result) = Paginator.paginateWebExtract(data, params: params)
+
+    let chunk = paginated["content"]?.value as? String ?? ""
+    #expect(chunk.count == 2000)
+    #expect(result.hasMore == true)
+    #expect(result.cursor == "2000")
+    #expect(result.total == 5000)
+}
+
+@Test func paginatorWebExtractSecondChunk() {
+    let content = String(repeating: "b", count: 5000)
+    let data: [String: AnyCodable] = ["content": AnyCodable(content)]
+    let params = PaginationParams(after: "2000", limit: 2000)
+    let (paginated, result) = Paginator.paginateWebExtract(data, params: params)
+
+    let chunk = paginated["content"]?.value as? String ?? ""
+    #expect(chunk.count == 2000)
+    #expect(result.hasMore == true)
+    #expect(result.cursor == "4000")
+}
+
+@Test func paginatorWebExtractLastChunk() {
+    let content = String(repeating: "c", count: 5000)
+    let data: [String: AnyCodable] = ["content": AnyCodable(content)]
+    let params = PaginationParams(after: "4000", limit: 2000)
+    let (paginated, result) = Paginator.paginateWebExtract(data, params: params)
+
+    let chunk = paginated["content"]?.value as? String ?? ""
+    #expect(chunk.count == 1000)
+    #expect(result.hasMore == false)
+    #expect(result.cursor == nil)
+    #expect(result.total == 5000)
+    #expect(result.returned == 1000)
+}
+
+@Test func paginatorWebExtractSmallContent() {
+    let data: [String: AnyCodable] = ["content": AnyCodable("short")]
+    let params = PaginationParams(after: nil, limit: 2000)
+    let (_, result) = Paginator.paginateWebExtract(data, params: params)
+
+    #expect(result.hasMore == false)
+    #expect(result.total == 5)
+    #expect(result.returned == 5)
+}
+
+// MARK: - Additional Test Helpers
+
+func makeSnapshotWithElements(count: Int) -> AppSnapshot {
+    var elements: [Element] = []
+    for i in 1...count {
+        elements.append(Element(
+            ref: "e\(i)",
+            role: "button",
+            label: "Button \(i)",
+            value: nil,
+            placeholder: nil,
+            enabled: true,
+            focused: false,
+            selected: false,
+            actions: ["click"]
+        ))
+    }
+    return AppSnapshot(
+        app: "TestApp",
+        bundleId: "com.test.app",
+        pid: 123,
+        timestamp: "2024-01-01T00:00:00Z",
+        window: WindowInfo(title: "Test Window", size: nil, focused: true),
+        meta: [:],
+        content: ContentTree(summary: "Test", sections: [
+            Section(role: "content", label: "content", elements: elements),
+        ]),
+        actions: [],
+        stats: SnapshotStats(totalNodes: count, prunedNodes: 0, enrichedElements: count, walkTimeMs: 10, enrichTimeMs: 5)
+    )
+}
+
+func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
+    var links: [AnyCodable] = []
+    for i in 1...linkCount {
+        links.append(AnyCodable([
+            "text": AnyCodable("Link \(i)"),
+            "href": AnyCodable("https://example.com/\(i)"),
+        ] as [String: AnyCodable]))
+    }
+    return [
+        "title": AnyCodable("Test Page"),
+        "url": AnyCodable("https://example.com"),
+        "links": AnyCodable(links),
+        "app": AnyCodable("Safari"),
+    ]
 }
