@@ -10,7 +10,7 @@ struct AgentView: ParsableCommand {
         commandName: "agentview",
         abstract: "Read macOS Accessibility APIs and expose structured UI state to AI agents.",
         version: "0.3.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self, ProcessCmd.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self, ProcessCmd.self, ParliamentCmd.self]
     )
 }
 
@@ -1340,5 +1340,151 @@ struct ProcessList: ParsableCommand {
     func run() throws {
         let response = try callDaemon(method: "process.list")
         try printResponse(response, pretty: pretty)
+    }
+}
+
+// MARK: - parliament
+
+struct ParliamentCmd: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "parliament",
+        abstract: "Multi-process dashboard for tracking owlets (parallel Claude Code processes)",
+        subcommands: [ParliamentAdd.self, ParliamentRemove.self, ParliamentClear.self, ParliamentStatus.self]
+    )
+}
+
+struct ParliamentAdd: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "add", abstract: "Register an owlet to track")
+
+    @Argument(help: "Process ID to track")
+    var pid: Int32
+
+    @Option(name: .long, help: "Label for this owlet (e.g. \"Issue #42: Add login\")")
+    var label: String?
+
+    @Flag(name: .long, help: "Output as JSON")
+    var json: Bool = false
+
+    func run() throws {
+        let params: [String: AnyCodable] = [
+            "pid": AnyCodable(Int(pid)),
+            "label": AnyCodable(label ?? "PID \(pid)"),
+        ]
+        let response = try callDaemon(method: "parliament.add", params: params)
+
+        if json {
+            try printResponse(response, pretty: false)
+        } else {
+            if let error = response.error {
+                fputs("Error: \(error.message)\n", stderr)
+                throw ExitCode.failure
+            }
+            print("✅ Added owlet PID \(pid) (\(label ?? "PID \(pid)"))")
+        }
+    }
+}
+
+struct ParliamentRemove: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "remove", abstract: "Stop tracking an owlet")
+
+    @Argument(help: "Process ID to stop tracking")
+    var pid: Int32
+
+    @Flag(name: .long, help: "Output as JSON")
+    var json: Bool = false
+
+    func run() throws {
+        let params: [String: AnyCodable] = ["pid": AnyCodable(Int(pid))]
+        let response = try callDaemon(method: "parliament.remove", params: params)
+
+        if json {
+            try printResponse(response, pretty: false)
+        } else {
+            if let error = response.error {
+                fputs("Error: \(error.message)\n", stderr)
+                throw ExitCode.failure
+            }
+            print("🗑️  Removed owlet PID \(pid)")
+        }
+    }
+}
+
+struct ParliamentClear: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "clear", abstract: "Remove all completed/exited owlets")
+
+    @Flag(name: .long, help: "Output as JSON")
+    var json: Bool = false
+
+    func run() throws {
+        let response = try callDaemon(method: "parliament.clear")
+
+        if json {
+            try printResponse(response, pretty: false)
+        } else {
+            if let error = response.error {
+                fputs("Error: \(error.message)\n", stderr)
+                throw ExitCode.failure
+            }
+            if let result = response.result, let dict = result.value as? [String: AnyCodable] {
+                let removed = dict["removed_count"]?.value as? Int ?? 0
+                let remaining = dict["remaining_count"]?.value as? Int ?? 0
+                print("🧹 Cleared \(removed) completed owlet\(removed == 1 ? "" : "s"), \(remaining) remaining")
+            }
+        }
+    }
+}
+
+struct ParliamentStatus: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "status", abstract: "Show all tracked owlets and their current state")
+
+    @Flag(name: .long, help: "Output as JSON")
+    var json: Bool = false
+
+    func run() throws {
+        let response = try callDaemon(method: "parliament.status")
+
+        if let error = response.error {
+            fputs("Error: \(error.message)\n", stderr)
+            throw ExitCode.failure
+        }
+
+        guard let result = response.result, let dict = result.value as? [String: AnyCodable] else {
+            if json { print("{}") } else { print("🦉 Parliament Status (0 owlets)") }
+            return
+        }
+
+        if json {
+            try printResponse(response, pretty: false)
+            return
+        }
+
+        // Decode owlets from response and format
+        guard let owletsArr = dict["owlets"]?.value as? [AnyCodable] else {
+            print(Parliament.formatStatus(owlets: []))
+            return
+        }
+
+        let owlets: [Owlet] = owletsArr.compactMap { item in
+            guard let d = item.value as? [String: AnyCodable] else { return nil }
+            let pid = (d["pid"]?.value as? Int).map { Int32($0) } ?? 0
+            let label = d["label"]?.value as? String ?? ""
+            let stateStr = d["state"]?.value as? String ?? "STARTING"
+            let state = OwletState(rawValue: stateStr) ?? .starting
+
+            var owlet = Owlet(pid: pid, label: label)
+            owlet.state = state
+            owlet.lastEvent = d["last_event"]?.value as? String
+            owlet.lastEventTime = d["last_event_time"]?.value as? String
+            owlet.lastDetail = d["last_detail"]?.value as? String
+            if let startedAt = d["started_at"]?.value as? String {
+                owlet.startedAt = startedAt
+            }
+            if let exitCode = d["exit_code"]?.value as? Int {
+                owlet.exitCode = exitCode
+            }
+            return owlet
+        }
+
+        print(Parliament.formatStatus(owlets: owlets))
     }
 }

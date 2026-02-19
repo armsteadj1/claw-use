@@ -13,9 +13,11 @@ final class Router {
     let eventBus: EventBus
     private let safariTransport: SafariTransport
     let processMonitor: ProcessMonitor
+    let parliament: Parliament
 
     init(screenState: ScreenState, cdpPool: CDPConnectionPool, transportRouter: TransportRouter,
-         snapshotCache: SnapshotCache, eventBus: EventBus, safariTransport: SafariTransport) {
+         snapshotCache: SnapshotCache, eventBus: EventBus, safariTransport: SafariTransport,
+         parliament: Parliament) {
         self.screenState = screenState
         self.cdpPool = cdpPool
         self.transportRouter = transportRouter
@@ -23,6 +25,7 @@ final class Router {
         self.eventBus = eventBus
         self.safariTransport = safariTransport
         self.processMonitor = ProcessMonitor(eventBus: eventBus)
+        self.parliament = parliament
     }
 
     func handle(_ request: JSONRPCRequest) -> JSONRPCResponse {
@@ -67,6 +70,14 @@ final class Router {
             return handleProcessUnwatch(params: params, id: request.id)
         case "process.list":
             return handleProcessList(id: request.id)
+        case "parliament.add":
+            return handleParliamentAdd(params: params, id: request.id)
+        case "parliament.remove":
+            return handleParliamentRemove(params: params, id: request.id)
+        case "parliament.clear":
+            return handleParliamentClear(id: request.id)
+        case "parliament.status":
+            return handleParliamentStatus(id: request.id)
         default:
             return JSONRPCResponse(error: .methodNotFound, id: request.id)
         }
@@ -572,6 +583,68 @@ final class Router {
         let result: [String: AnyCodable] = [
             "watched_pids": AnyCodable(pids.map { AnyCodable(Int($0)) }),
             "count": AnyCodable(pids.count),
+        ]
+        return JSONRPCResponse(result: AnyCodable(result), id: id)
+    }
+
+    // MARK: - parliament.* handlers
+
+    private func handleParliamentAdd(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        guard let pidValue = params["pid"]?.value as? Int else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "parliament.add requires 'pid' parameter"), id: id)
+        }
+        let pid = Int32(pidValue)
+        let label = params["label"]?.value as? String ?? "PID \(pid)"
+
+        let added = parliament.add(pid: pid, label: label)
+
+        if added {
+            let result: [String: AnyCodable] = [
+                "added": AnyCodable(true),
+                "pid": AnyCodable(Int(pid)),
+                "label": AnyCodable(label),
+            ]
+            return JSONRPCResponse(result: AnyCodable(result), id: id)
+        } else {
+            return JSONRPCResponse(error: JSONRPCError(code: -14, message: "PID \(pid) is already tracked in parliament"), id: id)
+        }
+    }
+
+    private func handleParliamentRemove(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        guard let pidValue = params["pid"]?.value as? Int else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "parliament.remove requires 'pid' parameter"), id: id)
+        }
+        let pid = Int32(pidValue)
+
+        let removed = parliament.remove(pid: pid)
+
+        if removed {
+            let result: [String: AnyCodable] = [
+                "removed": AnyCodable(true),
+                "pid": AnyCodable(Int(pid)),
+            ]
+            return JSONRPCResponse(result: AnyCodable(result), id: id)
+        } else {
+            return JSONRPCResponse(error: JSONRPCError(code: -15, message: "PID \(pid) not found in parliament"), id: id)
+        }
+    }
+
+    private func handleParliamentClear(id: AnyCodable?) -> JSONRPCResponse {
+        let removed = parliament.clear()
+        let result: [String: AnyCodable] = [
+            "cleared": AnyCodable(true),
+            "removed_count": AnyCodable(removed),
+            "remaining_count": AnyCodable(parliament.count),
+        ]
+        return JSONRPCResponse(result: AnyCodable(result), id: id)
+    }
+
+    private func handleParliamentStatus(id: AnyCodable?) -> JSONRPCResponse {
+        let owlets = parliament.status()
+        let json = Parliament.jsonStatus(owlets: owlets)
+        let result: [String: AnyCodable] = [
+            "owlets": AnyCodable(json.map { AnyCodable($0) }),
+            "count": AnyCodable(owlets.count),
         ]
         return JSONRPCResponse(result: AnyCodable(result), id: id)
     }

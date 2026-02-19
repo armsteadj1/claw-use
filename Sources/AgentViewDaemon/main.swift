@@ -99,8 +99,15 @@ transportRouter.register(transport: appleScriptTransport)
 transportRouter.register(transport: safariTransport)
 transportRouter.configureDefaults()
 
+// Initialize parliament (owlet tracking + state machine)
+let parliament = Parliament()
+parliament.cleanupDead()
+parliament.startListening(eventBus: eventBus)
+log("Parliament: \(parliament.count) owlets loaded, dead PIDs cleaned")
+
 let router = Router(screenState: screenState, cdpPool: cdpPool, transportRouter: transportRouter,
-                    snapshotCache: snapshotCache, eventBus: eventBus, safariTransport: safariTransport)
+                    snapshotCache: snapshotCache, eventBus: eventBus, safariTransport: safariTransport,
+                    parliament: parliament)
 let server = Server(router: router)
 
 // Write PID file

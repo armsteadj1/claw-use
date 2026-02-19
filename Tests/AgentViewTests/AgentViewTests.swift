@@ -2216,3 +2216,381 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     #expect(received.count == 3)
     #expect(received.allSatisfy { $0.type.hasPrefix("process.") })
 }
+
+// MARK: - Parliament Tests
+
+@Test func owletStateRawValues() {
+    #expect(OwletState.starting.rawValue == "STARTING")
+    #expect(OwletState.building.rawValue == "BUILDING")
+    #expect(OwletState.testing.rawValue == "TESTING")
+    #expect(OwletState.idle.rawValue == "IDLE")
+    #expect(OwletState.error.rawValue == "ERROR")
+    #expect(OwletState.done.rawValue == "DONE")
+    #expect(OwletState.failed.rawValue == "FAILED")
+}
+
+@Test func owletStateCaseIterable() {
+    #expect(OwletState.allCases.count == 7)
+}
+
+@Test func owletInitDefaults() {
+    let owlet = Owlet(pid: 123, label: "Issue #42")
+    #expect(owlet.pid == 123)
+    #expect(owlet.label == "Issue #42")
+    #expect(owlet.state == .starting)
+    #expect(owlet.lastEvent == nil)
+    #expect(owlet.lastEventTime == nil)
+    #expect(owlet.lastDetail == nil)
+    #expect(owlet.exitCode == nil)
+    #expect(!owlet.startedAt.isEmpty)
+}
+
+@Test func parliamentAddAndStatus() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+    let parliament = Parliament(filePath: path)
+
+    let added = parliament.add(pid: 100, label: "Issue #42")
+    #expect(added == true)
+    #expect(parliament.count == 1)
+
+    let owlets = parliament.status()
+    #expect(owlets.count == 1)
+    #expect(owlets[0].pid == 100)
+    #expect(owlets[0].label == "Issue #42")
+    #expect(owlets[0].state == .starting)
+
+    // Cleanup
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func parliamentAddDuplicate() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+    let parliament = Parliament(filePath: path)
+
+    let first = parliament.add(pid: 100, label: "Issue #42")
+    let second = parliament.add(pid: 100, label: "Issue #42 again")
+    #expect(first == true)
+    #expect(second == false)
+    #expect(parliament.count == 1)
+
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func parliamentRemove() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+    let parliament = Parliament(filePath: path)
+
+    parliament.add(pid: 100, label: "Issue #42")
+    parliament.add(pid: 200, label: "Issue #43")
+    #expect(parliament.count == 2)
+
+    let removed = parliament.remove(pid: 100)
+    #expect(removed == true)
+    #expect(parliament.count == 1)
+
+    let removedAgain = parliament.remove(pid: 100)
+    #expect(removedAgain == false)
+
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func parliamentClear() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+    let parliament = Parliament(filePath: path)
+    let bus = EventBus()
+    parliament.startListening(eventBus: bus)
+
+    parliament.add(pid: 100, label: "Active owlet")
+    parliament.add(pid: 200, label: "Done owlet")
+    parliament.add(pid: 300, label: "Failed owlet")
+
+    // Simulate done + failed via events
+    bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 200, details: ["exit_code": AnyCodable(0)]))
+    bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 300, details: ["exit_code": AnyCodable(1)]))
+
+    let cleared = parliament.clear()
+    #expect(cleared == 2) // done + failed removed
+    #expect(parliament.count == 1)
+
+    let remaining = parliament.status()
+    #expect(remaining[0].pid == 100)
+
+    parliament.stopListening()
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func parliamentStateMachineBuilding() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+    let parliament = Parliament(filePath: path)
+    let bus = EventBus()
+    parliament.startListening(eventBus: bus)
+
+    parliament.add(pid: 100, label: "Test")
+
+    // tool_start → BUILDING
+    bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: ["tool": AnyCodable("Read")]))
+
+    let owlets = parliament.status()
+    #expect(owlets[0].state == .building)
+    #expect(owlets[0].lastDetail == "Read")
+
+    parliament.stopListening()
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func parliamentStateMachineTesting() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+    let parliament = Parliament(filePath: path)
+    let bus = EventBus()
+    parliament.startListening(eventBus: bus)
+
+    parliament.add(pid: 100, label: "Test")
+
+    // tool_start with test command → TESTING
+    bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: [
+        "tool": AnyCodable("Bash"),
+        "command": AnyCodable("npm test"),
+    ]))
+
+    let owlets = parliament.status()
+    #expect(owlets[0].state == .testing)
+
+    parliament.stopListening()
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func parliamentStateMachineIdle() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+    let parliament = Parliament(filePath: path)
+    let bus = EventBus()
+    parliament.startListening(eventBus: bus)
+
+    parliament.add(pid: 100, label: "Test")
+
+    bus.publish(AgentViewEvent(type: ProcessEventType.idle.rawValue, pid: 100, details: ["idle_seconds": AnyCodable(360)]))
+
+    let owlets = parliament.status()
+    #expect(owlets[0].state == .idle)
+    #expect(owlets[0].lastDetail == "no output for 6m")
+
+    parliament.stopListening()
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func parliamentStateMachineError() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+    let parliament = Parliament(filePath: path)
+    let bus = EventBus()
+    parliament.startListening(eventBus: bus)
+
+    parliament.add(pid: 100, label: "Test")
+
+    bus.publish(AgentViewEvent(type: ProcessEventType.error.rawValue, pid: 100, details: ["error": AnyCodable("Rate limit")]))
+
+    let owlets = parliament.status()
+    #expect(owlets[0].state == .error)
+    #expect(owlets[0].lastDetail == "Rate limit")
+
+    parliament.stopListening()
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func parliamentStateMachineDone() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+    let parliament = Parliament(filePath: path)
+    let bus = EventBus()
+    parliament.startListening(eventBus: bus)
+
+    parliament.add(pid: 100, label: "Test")
+
+    bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 100, details: ["exit_code": AnyCodable(0)]))
+
+    let owlets = parliament.status()
+    #expect(owlets[0].state == .done)
+    #expect(owlets[0].exitCode == 0)
+
+    parliament.stopListening()
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func parliamentStateMachineFailed() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+    let parliament = Parliament(filePath: path)
+    let bus = EventBus()
+    parliament.startListening(eventBus: bus)
+
+    parliament.add(pid: 100, label: "Test")
+
+    bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 100, details: ["exit_code": AnyCodable(1)]))
+
+    let owlets = parliament.status()
+    #expect(owlets[0].state == .failed)
+    #expect(owlets[0].exitCode == 1)
+
+    parliament.stopListening()
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func parliamentTerminalStatesStick() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+    let parliament = Parliament(filePath: path)
+    let bus = EventBus()
+    parliament.startListening(eventBus: bus)
+
+    parliament.add(pid: 100, label: "Test")
+
+    // Exit with code 0 → DONE
+    bus.publish(AgentViewEvent(type: ProcessEventType.exit.rawValue, pid: 100, details: ["exit_code": AnyCodable(0)]))
+    #expect(parliament.status()[0].state == .done)
+
+    // Subsequent events should NOT change state
+    bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: ["tool": AnyCodable("Read")]))
+    #expect(parliament.status()[0].state == .done) // Still DONE
+
+    parliament.stopListening()
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func parliamentIgnoresUnregisteredPids() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+    let parliament = Parliament(filePath: path)
+    let bus = EventBus()
+    parliament.startListening(eventBus: bus)
+
+    // No owlets registered — events for PID 999 should be ignored
+    bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 999, details: ["tool": AnyCodable("Read")]))
+    #expect(parliament.count == 0)
+
+    parliament.stopListening()
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func parliamentPersistence() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+
+    // Create and populate
+    do {
+        let parliament = Parliament(filePath: path)
+        let bus = EventBus()
+        parliament.startListening(eventBus: bus)
+        parliament.add(pid: 100, label: "Issue #42")
+        parliament.add(pid: 200, label: "Issue #43")
+        bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: 100, details: ["tool": AnyCodable("Bash")]))
+        parliament.stopListening()
+    }
+
+    // Reload from disk
+    let parliament2 = Parliament(filePath: path)
+    let owlets = parliament2.status()
+    #expect(owlets.count == 2)
+
+    let owlet100 = owlets.first { $0.pid == 100 }
+    #expect(owlet100?.label == "Issue #42")
+    #expect(owlet100?.state == .building)
+
+    let owlet200 = owlets.first { $0.pid == 200 }
+    #expect(owlet200?.label == "Issue #43")
+    #expect(owlet200?.state == .starting)
+
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func parliamentFormatStatusEmpty() {
+    let output = Parliament.formatStatus(owlets: [])
+    #expect(output.contains("0 owlets"))
+    #expect(output.contains("no owlets tracked"))
+}
+
+@Test func parliamentFormatStatusWithOwlets() {
+    var owlet = Owlet(pid: 100, label: "Issue #42: Add login")
+    owlet.state = .building
+    owlet.lastDetail = "cargo build"
+
+    let output = Parliament.formatStatus(owlets: [owlet])
+    #expect(output.contains("1 owlet"))
+    #expect(output.contains("🔨"))
+    #expect(output.contains("BUILDING"))
+    #expect(output.contains("Issue #42: Add login"))
+    #expect(output.contains("cargo build"))
+}
+
+@Test func parliamentJsonStatus() {
+    var owlet = Owlet(pid: 100, label: "Issue #42")
+    owlet.state = .done
+    owlet.exitCode = 0
+    owlet.lastEvent = "process.exit"
+
+    let json = Parliament.jsonStatus(owlets: [owlet])
+    #expect(json.count == 1)
+    #expect(json[0]["pid"]?.value as? Int == 100)
+    #expect(json[0]["label"]?.value as? String == "Issue #42")
+    #expect(json[0]["state"]?.value as? String == "DONE")
+    #expect(json[0]["exit_code"]?.value as? Int == 0)
+    #expect(json[0]["last_event"]?.value as? String == "process.exit")
+    #expect(json[0]["duration"] != nil)
+}
+
+@Test func parliamentMultipleTestPatterns() {
+    let path = "/tmp/agentview-test-parliament-\(UUID().uuidString).json"
+    let parliament = Parliament(filePath: path)
+    let bus = EventBus()
+    parliament.startListening(eventBus: bus)
+
+    // Test various test runner patterns
+    let testCommands = ["cargo test", "npm test", "pytest", "go test", "swift test", "jest"]
+    for (i, cmd) in testCommands.enumerated() {
+        let pid = Int32(1000 + i)
+        parliament.add(pid: pid, label: "Test \(cmd)")
+        bus.publish(AgentViewEvent(type: ProcessEventType.toolStart.rawValue, pid: pid, details: [
+            "tool": AnyCodable("Bash"),
+            "command": AnyCodable(cmd),
+        ]))
+    }
+
+    let owlets = parliament.status()
+    #expect(owlets.allSatisfy { $0.state == .testing })
+
+    parliament.stopListening()
+    try? FileManager.default.removeItem(atPath: path)
+}
+
+@Test func owletCodableRoundTrip() throws {
+    var owlet = Owlet(pid: 42, label: "Test owlet")
+    owlet.state = .building
+    owlet.lastEvent = "process.tool_start"
+    owlet.lastDetail = "Read"
+    owlet.exitCode = nil
+
+    let encoder = JSONEncoder()
+    encoder.keyEncodingStrategy = .convertToSnakeCase
+    let data = try encoder.encode(owlet)
+
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let decoded = try decoder.decode(Owlet.self, from: data)
+
+    #expect(decoded.pid == 42)
+    #expect(decoded.label == "Test owlet")
+    #expect(decoded.state == .building)
+    #expect(decoded.lastEvent == "process.tool_start")
+    #expect(decoded.lastDetail == "Read")
+    #expect(decoded.exitCode == nil)
+}
+
+@Test func parliamentStoreCodableRoundTrip() throws {
+    var store = ParliamentStore()
+    store.owlets[100] = Owlet(pid: 100, label: "Issue #42")
+    store.owlets[200] = Owlet(pid: 200, label: "Issue #43")
+
+    let encoder = JSONEncoder()
+    encoder.keyEncodingStrategy = .convertToSnakeCase
+    let data = try encoder.encode(store)
+
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let decoded = try decoder.decode(ParliamentStore.self, from: data)
+
+    #expect(decoded.owlets.count == 2)
+    #expect(decoded.owlets[100]?.label == "Issue #42")
+    #expect(decoded.owlets[200]?.label == "Issue #43")
+}
