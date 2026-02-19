@@ -10,7 +10,7 @@ struct AgentView: ParsableCommand {
         commandName: "agentview",
         abstract: "Read macOS Accessibility APIs and expose structured UI state to AI agents.",
         version: "0.3.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self]
     )
 }
 
@@ -954,5 +954,38 @@ struct WebTab: ParsableCommand {
         let params: [String: AnyCodable] = ["match": AnyCodable(match)]
         let response = try callDaemon(method: "web.switchTab", params: params)
         try printResponse(response, pretty: pretty)
+    }
+}
+
+// MARK: - screenshot
+
+struct Screenshot: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Capture a window screenshot of an application"
+    )
+
+    @Argument(help: "App name (partial match, case-insensitive)")
+    var app: String
+
+    @Option(name: .long, help: "Output file path (default: /tmp/agentview-screenshot-<app>-<timestamp>.png)")
+    var output: String?
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        // Try daemon first
+        do {
+            var params: [String: AnyCodable] = ["app": AnyCodable(app)]
+            if let output = output { params["output"] = AnyCodable(output) }
+            let response = try callDaemon(method: "screenshot", params: params)
+            try printResponse(response, pretty: pretty)
+            return
+        } catch {}
+
+        // Fallback: direct
+        let result = ScreenCapture.capture(appName: app, outputPath: output)
+        try JSONOutput.print(result, pretty: pretty)
+        if !result.success { throw ExitCode.failure }
     }
 }

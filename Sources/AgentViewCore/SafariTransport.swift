@@ -107,7 +107,7 @@ public final class SafariTransport: Transport {
     public func listTabs() -> TransportResult {
         let script = """
         tell application "Safari"
-            set tabList to {}
+            set tabOutput to ""
             set winIndex to 0
             repeat with w in windows
                 set winIndex to winIndex + 1
@@ -116,10 +116,13 @@ public final class SafariTransport: Transport {
                     set tabIndex to tabIndex + 1
                     set tabURL to URL of t
                     set tabName to name of t
-                    set end of tabList to (winIndex as text) & "\\t" & (tabIndex as text) & "\\t" & tabURL & "\\t" & tabName
+                    if tabOutput is not "" then
+                        set tabOutput to tabOutput & ":::"
+                    end if
+                    set tabOutput to tabOutput & (winIndex as text) & "|||" & (tabIndex as text) & "|||" & tabURL & "|||" & tabName
                 end repeat
             end repeat
-            return tabList as text
+            return tabOutput
         end tell
         """
         let result = runOsascript(script: script, timeout: defaultTimeout)
@@ -128,18 +131,20 @@ public final class SafariTransport: Transport {
             return result
         }
 
-        // Parse tab list: "winIdx\ttabIdx\tURL\ttitle, winIdx\ttabIdx\tURL\ttitle, ..."
+        // Parse tab list using ::: between tabs and ||| between fields
         var tabs: [[String: AnyCodable]] = []
-        let lines = raw.components(separatedBy: ", ")
-        for line in lines {
-            let parts = line.components(separatedBy: "\t")
-            if parts.count >= 4 {
-                tabs.append([
-                    "window": AnyCodable(Int(parts[0]) ?? 1),
-                    "tab": AnyCodable(Int(parts[1]) ?? 1),
-                    "url": AnyCodable(parts[2]),
-                    "title": AnyCodable(parts[3...].joined(separator: "\t")),
-                ])
+        if !raw.isEmpty {
+            let entries = raw.components(separatedBy: ":::")
+            for entry in entries {
+                let parts = entry.components(separatedBy: "|||")
+                if parts.count >= 4 {
+                    tabs.append([
+                        "window": AnyCodable(Int(parts[0]) ?? 1),
+                        "tab": AnyCodable(Int(parts[1]) ?? 1),
+                        "url": AnyCodable(parts[2]),
+                        "title": AnyCodable(parts[3...].joined(separator: "|||")),
+                    ])
+                }
             }
         }
 
@@ -320,7 +325,10 @@ public final class SafariTransport: Transport {
 
         let script = """
         tell application "Safari"
-            set jsResult to do JavaScript "\(escapedExpr)" in current tab of window 1
+            set jsResult to (do JavaScript "\(escapedExpr)" in current tab of window 1)
+            if jsResult is missing value then
+                return ""
+            end if
             return jsResult as text
         end tell
         """
@@ -433,7 +441,21 @@ public final class SafariTransport: Transport {
     /// Extract main page content as markdown
     public func extractContent() -> TransportResult {
         let js = PageAnalyzer.extractionScript
-        return executeJS(expr: js, timeout: defaultTimeout + 5)
+        let result = executeJS(expr: js, timeout: defaultTimeout + 5)
+        guard result.success, let data = result.data,
+              let raw = data["result"]?.value as? String else {
+            return result
+        }
+
+        // The extraction script returns raw markdown text, not JSON.
+        // Wrap it in a proper JSON response object.
+        let output: [String: AnyCodable] = [
+            "success": AnyCodable(true),
+            "action": AnyCodable("extract"),
+            "content": AnyCodable(raw),
+            "length": AnyCodable(raw.count),
+        ]
+        return TransportResult(success: true, data: output, error: nil, transportUsed: name)
     }
 
     /// Get all interactive elements with refs

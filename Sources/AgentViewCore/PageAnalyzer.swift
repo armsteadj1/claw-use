@@ -9,6 +9,7 @@ public enum PageAnalyzer {
     /// Returns: { pageType, title, url, meta, forms, links, headings, mainContent, tables }
     public static let analysisScript: String = #"""
     (function() {
+        try {
         var result = {};
         result.url = location.href;
         result.title = document.title;
@@ -84,10 +85,10 @@ public enum PageAnalyzer {
         });
         result.headings = headings;
 
-        // Links (top 30)
+        // Links (top 15)
         var links = [];
         document.querySelectorAll('a[href]').forEach(function(a, i) {
-            if (i >= 30) return;
+            if (i >= 15) return;
             var text = a.textContent.trim();
             if (text && text.length > 1) {
                 links.push({ text: text.substring(0, 100), href: a.href });
@@ -95,18 +96,18 @@ public enum PageAnalyzer {
         });
         result.links = links;
 
-        // Main content as text
+        // Main content as text (limit to 2000 chars)
         var mainEl = document.querySelector('main, article, [role="main"], .content, #content');
         if (!mainEl) mainEl = document.body;
         var textContent = mainEl.innerText || mainEl.textContent || '';
-        result.mainContent = textContent.substring(0, 5000).trim();
+        result.mainContent = textContent.substring(0, 2000).trim();
 
         // Reading time estimate
         var wordCount = textContent.split(/\s+/).length;
         result.wordCount = wordCount;
         result.readingTimeMin = Math.ceil(wordCount / 200);
 
-        // Tables (first 3, max 20 rows each)
+        // Tables (first 3, max 10 rows each)
         if (hasTables) {
             var tables = [];
             document.querySelectorAll('table').forEach(function(table, ti) {
@@ -117,7 +118,7 @@ public enum PageAnalyzer {
                 });
                 var rows = [];
                 table.querySelectorAll('tbody tr, tr').forEach(function(tr, ri) {
-                    if (ri >= 20) return;
+                    if (ri >= 10) return;
                     var cells = [];
                     tr.querySelectorAll('td, th').forEach(function(td) {
                         cells.push(td.textContent.trim().substring(0, 100));
@@ -130,6 +131,9 @@ public enum PageAnalyzer {
         }
 
         return JSON.stringify(result);
+        } catch(e) {
+            return JSON.stringify({error: e.message, url: location.href, title: document.title, pageType: 'error'});
+        }
     })()
     """#
 

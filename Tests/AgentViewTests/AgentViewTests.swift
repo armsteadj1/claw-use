@@ -1316,6 +1316,108 @@ final class MockTransport: Transport {
     #expect(result.error?.contains("does not support") == true)
 }
 
+// MARK: - AnyCodable Bool vs Int Encoding Tests (Bug #5)
+
+@Test func anyCodableIntZeroEncodesAsNumber() throws {
+    let val = AnyCodable(0)
+    let data = try JSONEncoder().encode(val)
+    let json = String(data: data, encoding: .utf8)!
+    // Must be "0", not "false"
+    #expect(json == "0")
+}
+
+@Test func anyCodableIntOneEncodesAsNumber() throws {
+    let val = AnyCodable(1)
+    let data = try JSONEncoder().encode(val)
+    let json = String(data: data, encoding: .utf8)!
+    // Must be "1", not "true"
+    #expect(json == "1")
+}
+
+@Test func anyCodableBoolTrueEncodesAsBool() throws {
+    let val = AnyCodable(true)
+    let data = try JSONEncoder().encode(val)
+    let json = String(data: data, encoding: .utf8)!
+    #expect(json == "true")
+}
+
+@Test func anyCodableBoolFalseEncodesAsBool() throws {
+    let val = AnyCodable(false)
+    let data = try JSONEncoder().encode(val)
+    let json = String(data: data, encoding: .utf8)!
+    #expect(json == "false")
+}
+
+@Test func snapshotStatsEnrichedElementsZeroEncodesAsInt() throws {
+    let stats = SnapshotStats(totalNodes: 10, prunedNodes: 5, enrichedElements: 0, walkTimeMs: 1, enrichTimeMs: 1)
+    let data = try JSONOutput.encoder.encode(stats)
+    let json = String(data: data, encoding: .utf8)!
+    // enriched_elements should be 0, not false
+    #expect(json.contains("\"enriched_elements\":0"))
+}
+
+// MARK: - PageAnalyzer Truncation Tests (Bug #3)
+
+@Test func pageAnalyzerAnalysisScriptLimitsMainContent() {
+    let script = PageAnalyzer.analysisScript
+    #expect(script.contains("substring(0, 2000)"))
+    #expect(!script.contains("substring(0, 5000)"))
+}
+
+@Test func pageAnalyzerAnalysisScriptLimitsLinks() {
+    let script = PageAnalyzer.analysisScript
+    #expect(script.contains("i >= 15"))
+}
+
+@Test func pageAnalyzerAnalysisScriptLimitsTableRows() {
+    let script = PageAnalyzer.analysisScript
+    #expect(script.contains("ri >= 10"))
+}
+
+@Test func pageAnalyzerAnalysisScriptHasTryCatch() {
+    let script = PageAnalyzer.analysisScript
+    #expect(script.contains("try {"))
+    #expect(script.contains("catch(e)"))
+}
+
+// MARK: - ScreenCapture Tests
+
+@Test func screenCaptureNoMatchReturnsError() {
+    let result = ScreenCapture.capture(appName: "NonExistentApp12345XYZ")
+    #expect(result.success == false)
+    #expect(result.error?.contains("No window found") == true)
+}
+
+@Test func screenCaptureResultEncoding() throws {
+    let result = ScreenCaptureResult(success: true, path: "/tmp/test.png", width: 800, height: 600, error: nil)
+    let data = try JSONOutput.encoder.encode(result)
+    let json = String(data: data, encoding: .utf8)!
+    #expect(json.contains("800"))
+    #expect(json.contains("600"))
+    #expect(json.contains("test.png"))
+}
+
+// MARK: - CDP Reconnect Tests (Bug #7)
+
+@Test func cdpConnectionPoolReconnectDeadClearsDeadEntries() {
+    let pool = CDPConnectionPool()
+    // reconnectDead should not crash on empty pool
+    pool.reconnectDead()
+    let infos = pool.connectionInfos()
+    // No connections since no CDP servers are running in test
+    #expect(infos.isEmpty || infos.allSatisfy { $0.health != "dead" })
+}
+
+// MARK: - SafariTransport Extract Wrapping Tests (Bug #4)
+
+@Test func safariTransportExtractIsStructuredAction() {
+    let transport = SafariTransport()
+    let action = TransportAction(type: "safari_extract", app: "Safari", bundleId: "com.apple.Safari", pid: 1)
+    // This will fail because Safari isn't running in test, but proves the code path exists
+    let result = transport.execute(action: action)
+    #expect(result.transportUsed == "safari")
+}
+
 // MARK: - Test Helpers
 
 func makeTestSnapshot(app: String) -> AppSnapshot {

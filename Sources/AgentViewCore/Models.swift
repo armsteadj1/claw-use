@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 
 // MARK: - AnyCodable
@@ -29,26 +30,29 @@ public struct AnyCodable: Codable {
         }
     }
 
+    private static func isBool(_ value: Any) -> Bool {
+        return value is Bool && CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID()
+    }
+
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
-        switch value {
-        case nil:
+        if value == nil {
             try container.encodeNil()
-        case let bool as Bool:
-            try container.encode(bool)
-        case let int as Int:
+        } else if let val = value, AnyCodable.isBool(val) {
+            try container.encode(val as! Bool)
+        } else if let int = value as? Int {
             try container.encode(int)
-        case let int as Int32:
+        } else if let int = value as? Int32 {
             try container.encode(Int(int))
-        case let double as Double:
+        } else if let double = value as? Double {
             try container.encode(double)
-        case let string as String:
+        } else if let string = value as? String {
             try container.encode(string)
-        case let array as [AnyCodable]:
+        } else if let array = value as? [AnyCodable] {
             try container.encode(array)
-        case let dict as [String: AnyCodable]:
+        } else if let dict = value as? [String: AnyCodable] {
             try container.encode(dict)
-        default:
+        } else {
             try container.encodeNil()
         }
     }

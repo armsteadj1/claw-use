@@ -83,6 +83,8 @@ eventBus.startMonitoring()
 
 let cdpPool = CDPConnectionPool()
 cdpPool.start()
+// On daemon startup, attempt reconnection to any previously known CDP ports
+cdpPool.reconnectDead()
 
 // Initialize transport layer
 let transportRouter = TransportRouter()

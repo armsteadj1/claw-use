@@ -57,6 +57,8 @@ final class Router {
             return handleWebExtract(id: request.id)
         case "web.switchTab":
             return handleWebSwitchTab(params: params, id: request.id)
+        case "screenshot":
+            return handleScreenshot(params: params, id: request.id)
         default:
             return JSONRPCResponse(error: .methodNotFound, id: request.id)
         }
@@ -413,6 +415,27 @@ final class Router {
         let match = params["match"]?.value as? String
         let result = safariTransport.switchTab(match: match)
         return transportResultToResponse(result, id: id)
+    }
+
+    // MARK: - screenshot
+
+    private func handleScreenshot(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        guard let appName = params["app"]?.value as? String else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "screenshot requires 'app' parameter"), id: id)
+        }
+        let outputPath = params["output"]?.value as? String
+        let result = ScreenCapture.capture(appName: appName, outputPath: outputPath)
+        if result.success {
+            var output: [String: AnyCodable] = [
+                "success": AnyCodable(true),
+                "path": AnyCodable(result.path),
+                "width": AnyCodable(result.width),
+                "height": AnyCodable(result.height),
+            ]
+            output["transport_used"] = AnyCodable("screencapture")
+            return JSONRPCResponse(result: AnyCodable(output), id: id)
+        }
+        return JSONRPCResponse(error: JSONRPCError(code: -10, message: result.error ?? "Screenshot failed"), id: id)
     }
 
     // MARK: - Helpers

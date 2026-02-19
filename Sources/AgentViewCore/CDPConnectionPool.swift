@@ -139,6 +139,20 @@ public final class CDPConnectionPool {
 
     // MARK: - Private
 
+    /// Attempt to reconnect any dead connections, then discover new ones
+    public func reconnectDead() {
+        lock.lock()
+        let deadPorts = connections.filter { $0.value.health == .dead }.map { $0.key }
+        for port in deadPorts {
+            connections[port]?.wsTask?.cancel(with: .goingAway, reason: nil)
+            connections.removeValue(forKey: port)
+        }
+        lock.unlock()
+
+        // Re-discover all default ports (including ones we just cleared)
+        discoverAndConnect()
+    }
+
     private func discoverAndConnect() {
         for port in defaultPorts {
             lock.lock()
