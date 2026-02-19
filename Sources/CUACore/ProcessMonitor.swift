@@ -347,7 +347,7 @@ public final class ProcessWatcher {
             ident: UInt(pid),
             filter: Int16(EVFILT_PROC),
             flags: UInt16(EV_ADD | EV_ONESHOT),
-            fflags: UInt32(NOTE_EXIT | NOTE_EXITSTATUS),
+            fflags: UInt32(NOTE_EXIT) | UInt32(bitPattern: NOTE_EXITSTATUS),
             data: 0,
             udata: nil
         )
