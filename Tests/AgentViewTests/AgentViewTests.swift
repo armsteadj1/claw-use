@@ -1862,3 +1862,357 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
         "app": AnyCodable("Safari"),
     ]
 }
+
+// MARK: - ProcessEventType Tests
+
+@Test func processEventTypeRawValues() {
+    #expect(ProcessEventType.toolStart.rawValue == "process.tool_start")
+    #expect(ProcessEventType.toolEnd.rawValue == "process.tool_end")
+    #expect(ProcessEventType.message.rawValue == "process.message")
+    #expect(ProcessEventType.error.rawValue == "process.error")
+    #expect(ProcessEventType.idle.rawValue == "process.idle")
+    #expect(ProcessEventType.exit.rawValue == "process.exit")
+}
+
+@Test func processEventTypesCaseIterable() {
+    #expect(ProcessEventType.allCases.count == 6)
+}
+
+// MARK: - AgentViewEventType Process Types
+
+@Test func agentViewEventTypeProcessRawValues() {
+    #expect(AgentViewEventType.processToolStart.rawValue == "process.tool_start")
+    #expect(AgentViewEventType.processToolEnd.rawValue == "process.tool_end")
+    #expect(AgentViewEventType.processMessage.rawValue == "process.message")
+    #expect(AgentViewEventType.processError.rawValue == "process.error")
+    #expect(AgentViewEventType.processIdle.rawValue == "process.idle")
+    #expect(AgentViewEventType.processExit.rawValue == "process.exit")
+}
+
+// MARK: - NDJSONParser Tests
+
+@Test func ndjsonParserToolUse() {
+    let line = #"{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/test.swift"}}"#
+    let event = NDJSONParser.parse(line: line, pid: 1234)
+    #expect(event != nil)
+    #expect(event?.type == "process.tool_start")
+    #expect(event?.pid == 1234)
+    let details = event?.details
+    #expect(details?["tool"]?.value as? String == "Read")
+    #expect(details?["file_path"]?.value as? String == "/tmp/test.swift")
+}
+
+@Test func ndjsonParserToolCall() {
+    let line = #"{"type":"tool_call","name":"Bash","input":{"command":"ls -la"}}"#
+    let event = NDJSONParser.parse(line: line, pid: 42)
+    #expect(event != nil)
+    #expect(event?.type == "process.tool_start")
+    let details = event?.details
+    #expect(details?["tool"]?.value as? String == "Bash")
+    #expect(details?["command"]?.value as? String == "ls -la")
+}
+
+@Test func ndjsonParserToolResult() {
+    let line = #"{"type":"tool_result","name":"Read","is_error":false,"duration_ms":45}"#
+    let event = NDJSONParser.parse(line: line, pid: 1234)
+    #expect(event != nil)
+    #expect(event?.type == "process.tool_end")
+    let details = event?.details
+    #expect(details?["tool"]?.value as? String == "Read")
+    #expect(details?["success"]?.value as? Bool == true)
+    #expect(details?["duration_ms"]?.value as? Int == 45)
+}
+
+@Test func ndjsonParserToolResultWithError() {
+    let line = #"{"type":"tool_result","name":"Bash","is_error":true,"error":"command not found"}"#
+    let event = NDJSONParser.parse(line: line, pid: 1234)
+    #expect(event != nil)
+    #expect(event?.type == "process.tool_end")
+    let details = event?.details
+    #expect(details?["success"]?.value as? Bool == false)
+    #expect(details?["error"]?.value as? String == "command not found")
+}
+
+@Test func ndjsonParserTextMessage() {
+    let line = #"{"type":"text","text":"I'll help you with that."}"#
+    let event = NDJSONParser.parse(line: line, pid: 1234)
+    #expect(event != nil)
+    #expect(event?.type == "process.message")
+    #expect(event?.details?["text"]?.value as? String == "I'll help you with that.")
+}
+
+@Test func ndjsonParserAssistantMessage() {
+    let line = #"{"type":"assistant","text":"Let me check the file."}"#
+    let event = NDJSONParser.parse(line: line, pid: 1234)
+    #expect(event != nil)
+    #expect(event?.type == "process.message")
+    #expect(event?.details?["text"]?.value as? String == "Let me check the file.")
+}
+
+@Test func ndjsonParserContentBlockDelta() {
+    let line = #"{"type":"content_block_delta","delta":{"text":"Hello world"}}"#
+    let event = NDJSONParser.parse(line: line, pid: 1234)
+    #expect(event != nil)
+    #expect(event?.type == "process.message")
+    #expect(event?.details?["text"]?.value as? String == "Hello world")
+}
+
+@Test func ndjsonParserErrorEvent() {
+    let line = #"{"type":"error","error":"Rate limit exceeded"}"#
+    let event = NDJSONParser.parse(line: line, pid: 1234)
+    #expect(event != nil)
+    #expect(event?.type == "process.error")
+    #expect(event?.details?["error"]?.value as? String == "Rate limit exceeded")
+}
+
+@Test func ndjsonParserErrorObjectEvent() {
+    let line = #"{"type":"error","error":{"message":"API error","code":429}}"#
+    let event = NDJSONParser.parse(line: line, pid: 1234)
+    #expect(event != nil)
+    #expect(event?.type == "process.error")
+    #expect(event?.details?["error"]?.value as? String == "API error")
+}
+
+@Test func ndjsonParserResultEvent() {
+    let line = #"{"type":"result","result":"Task completed successfully"}"#
+    let event = NDJSONParser.parse(line: line, pid: 1234)
+    #expect(event != nil)
+    #expect(event?.type == "process.message")
+    let details = event?.details
+    #expect(details?["text"]?.value as? String == "Task completed successfully")
+    #expect(details?["final"]?.value as? Bool == true)
+}
+
+@Test func ndjsonParserNonJsonFallback() {
+    let line = "This is just plain text output"
+    let event = NDJSONParser.parse(line: line, pid: 1234)
+    #expect(event != nil)
+    #expect(event?.type == "process.message")
+    #expect(event?.details?["raw"]?.value as? String == "This is just plain text output")
+}
+
+@Test func ndjsonParserEmptyLine() {
+    let event = NDJSONParser.parse(line: "", pid: 1234)
+    #expect(event == nil)
+}
+
+@Test func ndjsonParserWhitespaceLine() {
+    let event = NDJSONParser.parse(line: "   \n  ", pid: 1234)
+    #expect(event == nil)
+}
+
+@Test func ndjsonParserUnknownJsonType() {
+    let line = #"{"type":"system","text":"Starting session"}"#
+    let event = NDJSONParser.parse(line: line, pid: 1234)
+    #expect(event != nil)
+    #expect(event?.type == "process.message")
+    #expect(event?.details?["raw_type"]?.value as? String == "system")
+    #expect(event?.details?["text"]?.value as? String == "Starting session")
+}
+
+@Test func ndjsonParserToolUseWithToolField() {
+    let line = #"{"type":"tool_use","tool":"Write","input":{"file_path":"/tmp/out.txt"}}"#
+    let event = NDJSONParser.parse(line: line, pid: 99)
+    #expect(event != nil)
+    #expect(event?.type == "process.tool_start")
+    #expect(event?.details?["tool"]?.value as? String == "Write")
+}
+
+// MARK: - ProcessMonitor Tests
+
+@Test func processMonitorInitialization() {
+    let bus = EventBus()
+    let monitor = ProcessMonitor(eventBus: bus)
+    #expect(monitor.watchCount == 0)
+    #expect(monitor.watchedPIDs.isEmpty)
+}
+
+@Test func processMonitorWatchNonexistentProcess() {
+    let bus = EventBus()
+    let monitor = ProcessMonitor(eventBus: bus)
+    // PID 99999999 should not exist
+    let result = monitor.watch(pid: 99999999)
+    #expect(result == false)
+    #expect(monitor.watchCount == 0)
+}
+
+@Test func processMonitorWatchCurrentProcess() {
+    let bus = EventBus()
+    let monitor = ProcessMonitor(eventBus: bus)
+    let myPid = ProcessInfo.processInfo.processIdentifier
+    let result = monitor.watch(pid: myPid)
+    #expect(result == true)
+    #expect(monitor.watchCount == 1)
+    #expect(monitor.isWatching(pid: myPid) == true)
+    #expect(monitor.watchedPIDs == [myPid])
+
+    // Cleanup
+    monitor.unwatch(pid: myPid)
+    #expect(monitor.watchCount == 0)
+    #expect(monitor.isWatching(pid: myPid) == false)
+}
+
+@Test func processMonitorDuplicateWatch() {
+    let bus = EventBus()
+    let monitor = ProcessMonitor(eventBus: bus)
+    let myPid = ProcessInfo.processInfo.processIdentifier
+
+    let first = monitor.watch(pid: myPid)
+    let second = monitor.watch(pid: myPid)
+    #expect(first == true)
+    #expect(second == false) // Already watching
+    #expect(monitor.watchCount == 1)
+
+    monitor.unwatch(pid: myPid)
+}
+
+@Test func processMonitorUnwatchAll() {
+    let bus = EventBus()
+    let monitor = ProcessMonitor(eventBus: bus)
+    let myPid = ProcessInfo.processInfo.processIdentifier
+
+    let _ = monitor.watch(pid: myPid)
+    #expect(monitor.watchCount == 1)
+
+    monitor.unwatchAll()
+    #expect(monitor.watchCount == 0)
+}
+
+@Test func processMonitorCleanupDead() {
+    let bus = EventBus()
+    let monitor = ProcessMonitor(eventBus: bus)
+    let myPid = ProcessInfo.processInfo.processIdentifier
+
+    let _ = monitor.watch(pid: myPid)
+    #expect(monitor.watchCount == 1)
+
+    // Our own process is alive, so cleanup should not remove it
+    monitor.cleanupDead()
+    #expect(monitor.watchCount == 1)
+
+    monitor.unwatchAll()
+}
+
+@Test func processMonitorWatchWithLogPath() {
+    let bus = EventBus()
+    let monitor = ProcessMonitor(eventBus: bus)
+    let myPid = ProcessInfo.processInfo.processIdentifier
+
+    // Watch with a log path (file doesn't need to exist yet)
+    let result = monitor.watch(pid: myPid, logPath: "/tmp/agentview-test-nonexistent.log")
+    #expect(result == true)
+    #expect(monitor.watchCount == 1)
+
+    monitor.unwatchAll()
+}
+
+@Test func processMonitorLogFileTailing() throws {
+    let bus = EventBus()
+    var received: [AgentViewEvent] = []
+    let lock = NSLock()
+
+    let _ = bus.subscribe(typeFilters: Set(ProcessEventType.allCases.map { $0.rawValue })) { event in
+        lock.lock()
+        received.append(event)
+        lock.unlock()
+    }
+
+    let myPid = ProcessInfo.processInfo.processIdentifier
+    let logPath = "/tmp/agentview-test-\(UUID().uuidString).log"
+
+    // Create the log file
+    FileManager.default.createFile(atPath: logPath, contents: nil)
+
+    let monitor = ProcessMonitor(eventBus: bus)
+    let _ = monitor.watch(pid: myPid, logPath: logPath)
+
+    // Write NDJSON lines to the log file
+    Thread.sleep(forTimeInterval: 0.5) // Wait for watcher to start
+
+    let toolLine = #"{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/foo"}}"# + "\n"
+    let resultLine = #"{"type":"tool_result","name":"Read","is_error":false}"# + "\n"
+
+    if let fh = FileHandle(forWritingAtPath: logPath) {
+        fh.seekToEndOfFile()
+        fh.write(toolLine.data(using: .utf8)!)
+        fh.write(resultLine.data(using: .utf8)!)
+        fh.closeFile()
+    }
+
+    // Wait for events to be processed
+    Thread.sleep(forTimeInterval: 2.0)
+
+    lock.lock()
+    let eventCount = received.count
+    lock.unlock()
+
+    #expect(eventCount >= 2)
+
+    if eventCount >= 2 {
+        lock.lock()
+        let first = received[0]
+        let second = received[1]
+        lock.unlock()
+
+        #expect(first.type == "process.tool_start")
+        #expect(first.details?["tool"]?.value as? String == "Read")
+        #expect(second.type == "process.tool_end")
+    }
+
+    // Cleanup
+    monitor.unwatchAll()
+    try? FileManager.default.removeItem(atPath: logPath)
+}
+
+// MARK: - ProcessWatcher Tests
+
+@Test func processWatcherInit() {
+    let bus = EventBus()
+    let watcher = ProcessWatcher(pid: 123, logPath: nil, idleTimeout: 60, eventBus: bus)
+    #expect(watcher.pid == 123)
+    #expect(watcher.logPath == nil)
+    #expect(watcher.idleTimeout == 60)
+    #expect(watcher.isActive == true)
+}
+
+@Test func processWatcherStop() {
+    let bus = EventBus()
+    let watcher = ProcessWatcher(pid: 123, logPath: nil, eventBus: bus)
+    #expect(watcher.isActive == true)
+    watcher.stop()
+    #expect(watcher.isActive == false)
+}
+
+// MARK: - EventBus Process Event Filtering
+
+@Test func eventBusFilterByProcessTypes() {
+    let bus = EventBus()
+
+    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
+    bus.publish(AgentViewEvent(type: "process.tool_start", pid: 123, details: ["tool": AnyCodable("Read")]))
+    bus.publish(AgentViewEvent(type: "process.tool_end", pid: 123, details: ["tool": AnyCodable("Read")]))
+    bus.publish(AgentViewEvent(type: "app.terminated", app: "Safari"))
+
+    let processEvents = bus.getRecentEvents(typeFilters: Set(["process.tool_start", "process.tool_end"]))
+    #expect(processEvents.count == 2)
+    #expect(processEvents.allSatisfy { $0.type.hasPrefix("process.") })
+}
+
+@Test func eventBusSubscribeToProcessEvents() {
+    let bus = EventBus()
+    var received: [AgentViewEvent] = []
+
+    let _ = bus.subscribe(typeFilters: Set(ProcessEventType.allCases.map { $0.rawValue })) { event in
+        received.append(event)
+    }
+
+    // Publish mix of events
+    bus.publish(AgentViewEvent(type: "app.launched", app: "Safari"))
+    bus.publish(AgentViewEvent(type: "process.tool_start", pid: 100))
+    bus.publish(AgentViewEvent(type: "process.message", pid: 100))
+    bus.publish(AgentViewEvent(type: "ax.focus_changed", app: "Finder"))
+    bus.publish(AgentViewEvent(type: "process.exit", pid: 100))
+
+    #expect(received.count == 3)
+    #expect(received.allSatisfy { $0.type.hasPrefix("process.") })
+}

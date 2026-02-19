@@ -10,7 +10,7 @@ struct AgentView: ParsableCommand {
         commandName: "agentview",
         abstract: "Read macOS Accessibility APIs and expose structured UI state to AI agents.",
         version: "0.3.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self, ProcessCmd.self]
     )
 }
 
@@ -1240,5 +1240,90 @@ struct Screenshot: ParsableCommand {
             try JSONOutput.print(result, pretty: pretty)
         }
         if !result.success { throw ExitCode.failure }
+    }
+}
+
+// MARK: - process
+
+struct ProcessCmd: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "process",
+        abstract: "Monitor running processes and parse their output into structured events",
+        subcommands: [ProcessWatch.self, ProcessUnwatch.self, ProcessList.self]
+    )
+}
+
+struct ProcessWatch: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "watch", abstract: "Attach to a process and emit structured events from its output")
+
+    @Argument(help: "Process ID to watch")
+    var pid: Int32
+
+    @Option(name: .long, help: "Path to log file to tail (instead of stdout/stderr)")
+    var log: String?
+
+    @Option(name: .long, help: "Idle timeout in seconds (default: 300)")
+    var idleTimeout: Int = 300
+
+    @Flag(name: .long, help: "Output events as NDJSON (one JSON object per line)")
+    var json: Bool = false
+
+    @Flag(name: .long, help: "Stream events via daemon (for subscribers to receive)")
+    var stream: Bool = false
+
+    func run() throws {
+        // Register watch via daemon
+        var params: [String: AnyCodable] = [
+            "pid": AnyCodable(Int(pid)),
+            "idle_timeout": AnyCodable(idleTimeout),
+        ]
+        if let log = log { params["log"] = AnyCodable(log) }
+
+        let response = try callDaemon(method: "process.watch", params: params)
+
+        if let error = response.error {
+            fputs("Error: \(error.message)\n", stderr)
+            throw ExitCode.failure
+        }
+
+        if json || stream {
+            // Stream events filtered to this PID's process.* events
+            let streamParams: [String: AnyCodable] = [
+                "types": AnyCodable("process.tool_start,process.tool_end,process.message,process.error,process.idle,process.exit"),
+            ]
+            try DaemonClient.stream(params: streamParams)
+        } else {
+            // Print confirmation and exit
+            let enc = JSONOutput.encoder
+            if let result = response.result {
+                let data = try enc.encode(result)
+                print(String(data: data, encoding: .utf8)!)
+            }
+        }
+    }
+}
+
+struct ProcessUnwatch: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "unwatch", abstract: "Stop watching a process")
+
+    @Argument(help: "Process ID to stop watching")
+    var pid: Int32
+
+    func run() throws {
+        let params: [String: AnyCodable] = ["pid": AnyCodable(Int(pid))]
+        let response = try callDaemon(method: "process.unwatch", params: params)
+        try printResponse(response, pretty: false)
+    }
+}
+
+struct ProcessList: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "list", abstract: "List currently watched processes")
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        let response = try callDaemon(method: "process.list")
+        try printResponse(response, pretty: pretty)
     }
 }

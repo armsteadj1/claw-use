@@ -43,6 +43,14 @@ public enum AgentViewEventType: String, CaseIterable {
     case screenUnlocked = "screen.unlocked"
     case displaySleep = "screen.display_sleep"
     case displayWake = "screen.display_wake"
+
+    // Process monitoring
+    case processToolStart = "process.tool_start"
+    case processToolEnd = "process.tool_end"
+    case processMessage = "process.message"
+    case processError = "process.error"
+    case processIdle = "process.idle"
+    case processExit = "process.exit"
 }
 
 // MARK: - Subscriber

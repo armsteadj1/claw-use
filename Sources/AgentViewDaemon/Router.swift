@@ -12,6 +12,7 @@ final class Router {
     let snapshotCache: SnapshotCache
     let eventBus: EventBus
     private let safariTransport: SafariTransport
+    let processMonitor: ProcessMonitor
 
     init(screenState: ScreenState, cdpPool: CDPConnectionPool, transportRouter: TransportRouter,
          snapshotCache: SnapshotCache, eventBus: EventBus, safariTransport: SafariTransport) {
@@ -21,6 +22,7 @@ final class Router {
         self.snapshotCache = snapshotCache
         self.eventBus = eventBus
         self.safariTransport = safariTransport
+        self.processMonitor = ProcessMonitor(eventBus: eventBus)
     }
 
     func handle(_ request: JSONRPCRequest) -> JSONRPCResponse {
@@ -59,6 +61,12 @@ final class Router {
             return handleWebSwitchTab(params: params, id: request.id)
         case "screenshot":
             return handleScreenshot(params: params, id: request.id)
+        case "process.watch":
+            return handleProcessWatch(params: params, id: request.id)
+        case "process.unwatch":
+            return handleProcessUnwatch(params: params, id: request.id)
+        case "process.list":
+            return handleProcessList(id: request.id)
         default:
             return JSONRPCResponse(error: .methodNotFound, id: request.id)
         }
@@ -330,6 +338,10 @@ final class Router {
                 "recent_count": AnyCodable(eventBus.eventCount),
                 "subscribers": AnyCodable(eventBus.subscriberCount),
             ] as [String: AnyCodable]),
+            "process_monitor": AnyCodable([
+                "watched_pids": AnyCodable(processMonitor.watchedPIDs.map { AnyCodable(Int($0)) }),
+                "watch_count": AnyCodable(processMonitor.watchCount),
+            ] as [String: AnyCodable]),
         ]
 
         return JSONRPCResponse(result: AnyCodable(result), id: id)
@@ -436,6 +448,61 @@ final class Router {
             return JSONRPCResponse(result: AnyCodable(output), id: id)
         }
         return JSONRPCResponse(error: JSONRPCError(code: -10, message: result.error ?? "Screenshot failed"), id: id)
+    }
+
+    // MARK: - process.* handlers
+
+    private func handleProcessWatch(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        guard let pidValue = params["pid"]?.value as? Int else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "process.watch requires 'pid' parameter"), id: id)
+        }
+        let pid = Int32(pidValue)
+        let logPath = params["log"]?.value as? String
+        let idleTimeout = (params["idle_timeout"]?.value as? Int).map { TimeInterval($0) } ?? 300
+
+        let started = processMonitor.watch(pid: pid, logPath: logPath, idleTimeout: idleTimeout)
+
+        if started {
+            let result: [String: AnyCodable] = [
+                "watching": AnyCodable(true),
+                "pid": AnyCodable(Int(pid)),
+                "log_path": AnyCodable(logPath),
+                "idle_timeout_s": AnyCodable(Int(idleTimeout)),
+            ]
+            return JSONRPCResponse(result: AnyCodable(result), id: id)
+        } else {
+            if processMonitor.isWatching(pid: pid) {
+                return JSONRPCResponse(error: JSONRPCError(code: -11, message: "Already watching pid \(pid)"), id: id)
+            }
+            return JSONRPCResponse(error: JSONRPCError(code: -12, message: "Process \(pid) not found or not accessible"), id: id)
+        }
+    }
+
+    private func handleProcessUnwatch(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        guard let pidValue = params["pid"]?.value as? Int else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "process.unwatch requires 'pid' parameter"), id: id)
+        }
+        let pid = Int32(pidValue)
+
+        guard processMonitor.isWatching(pid: pid) else {
+            return JSONRPCResponse(error: JSONRPCError(code: -13, message: "Not watching pid \(pid)"), id: id)
+        }
+
+        processMonitor.unwatch(pid: pid)
+        let result: [String: AnyCodable] = [
+            "unwatched": AnyCodable(true),
+            "pid": AnyCodable(Int(pid)),
+        ]
+        return JSONRPCResponse(result: AnyCodable(result), id: id)
+    }
+
+    private func handleProcessList(id: AnyCodable?) -> JSONRPCResponse {
+        let pids = processMonitor.watchedPIDs
+        let result: [String: AnyCodable] = [
+            "watched_pids": AnyCodable(pids.map { AnyCodable(Int($0)) }),
+            "count": AnyCodable(pids.count),
+        ]
+        return JSONRPCResponse(result: AnyCodable(result), id: id)
     }
 
     // MARK: - Helpers
