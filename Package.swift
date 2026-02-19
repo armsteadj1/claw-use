@@ -8,9 +8,16 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
     ],
     targets: [
+        // C shim for kevent() syscall (Swift 6 can't disambiguate from kevent struct)
+        .target(
+            name: "CKeventShim",
+            path: "Sources/CKeventShim",
+            publicHeadersPath: "include"
+        ),
         // Shared business logic library
         .target(
             name: "CUACore",
+            dependencies: ["CKeventShim"],
             path: "Sources/CUACore",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
