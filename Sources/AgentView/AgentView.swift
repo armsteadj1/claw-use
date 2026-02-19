@@ -1055,13 +1055,18 @@ struct WebNavigate: ParsableCommand {
     @Argument(help: "URL to navigate to")
     var url: String
 
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
     func run() throws {
         let params: [String: AnyCodable] = ["url": AnyCodable(url)]
         let response = try callDaemon(method: "web.navigate", params: params)
-        try printResponse(response, pretty: pretty)
+        try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
+            CompactFormatter.formatWebNavigate(data: dict)
+        }
     }
 }
 
@@ -1112,13 +1117,18 @@ struct WebClick: ParsableCommand {
     @Argument(help: "Text to fuzzy match (button text, link text, aria-label)")
     var match: String
 
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
     func run() throws {
         let params: [String: AnyCodable] = ["match": AnyCodable(match)]
         let response = try callDaemon(method: "web.click", params: params)
-        try printResponse(response, pretty: pretty)
+        try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
+            CompactFormatter.formatWebClick(data: dict)
+        }
     }
 }
 
@@ -1131,6 +1141,9 @@ struct WebFill: ParsableCommand {
     @Option(name: .long, help: "Value to fill")
     var value: String
 
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
@@ -1140,7 +1153,9 @@ struct WebFill: ParsableCommand {
             "value": AnyCodable(value),
         ]
         let response = try callDaemon(method: "web.fill", params: params)
-        try printResponse(response, pretty: pretty)
+        try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
+            CompactFormatter.formatWebFill(data: dict)
+        }
     }
 }
 

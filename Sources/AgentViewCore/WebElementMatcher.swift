@@ -101,74 +101,81 @@ public struct WebElementMatcher {
     public static func fillScript(match: String, value: String) -> String {
         return #"""
         (function() {
-            var match = '\#(match)'.toLowerCase();
-            var fillValue = '\#(value)';
-            var els = document.querySelectorAll('input, textarea, select, [contenteditable]');
-            var best = null;
-            var bestScore = 0;
-            for (var i = 0; i < els.length; i++) {
-                var el = els[i];
-                var rect = el.getBoundingClientRect();
-                if (rect.width === 0 && rect.height === 0) continue;
-                var score = 0;
-                var placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
-                var name = (el.getAttribute('name') || '').toLowerCase();
-                var id = (el.id || '').toLowerCase();
-                var ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
-                var type = (el.getAttribute('type') || '').toLowerCase();
-                var labelText = '';
-                if (el.id) {
-                    var lbl = document.querySelector('label[for=' + JSON.stringify(el.id) + ']');
-                    if (lbl) labelText = (lbl.innerText || '').toLowerCase().trim();
+            try {
+                var match = '\#(match)'.toLowerCase();
+                var fillValue = '\#(value)';
+                var els = document.querySelectorAll('input, textarea, select, [contenteditable]');
+                if (els.length === 0) {
+                    return JSON.stringify({success: false, error: 'No input matching: ' + match});
                 }
-                if (!labelText) {
-                    var parent = el.closest('label');
-                    if (parent) labelText = (parent.innerText || '').toLowerCase().trim();
-                }
-                if (labelText === match) score += 100;
-                else if (labelText.indexOf(match) !== -1) score += 80;
-                if (placeholder === match) score += 100;
-                else if (placeholder.indexOf(match) !== -1) score += 70;
-                if (ariaLabel === match) score += 100;
-                else if (ariaLabel.indexOf(match) !== -1) score += 70;
-                if (name === match) score += 90;
-                else if (name.indexOf(match) !== -1) score += 60;
-                if (id === match) score += 80;
-                else if (id.indexOf(match) !== -1) score += 50;
-                if (type === match) score += 30;
-                if (score > bestScore) { best = el; bestScore = score; }
-            }
-            if (best && bestScore > 0) {
-                best.focus();
-                if (best.tagName.toLowerCase() === 'select') {
-                    for (var j = 0; j < best.options.length; j++) {
-                        if (best.options[j].text.toLowerCase().indexOf(fillValue.toLowerCase()) !== -1 ||
-                            best.options[j].value.toLowerCase().indexOf(fillValue.toLowerCase()) !== -1) {
-                            best.selectedIndex = j;
-                            break;
-                        }
+                var best = null;
+                var bestScore = 0;
+                for (var i = 0; i < els.length; i++) {
+                    var el = els[i];
+                    var rect = el.getBoundingClientRect();
+                    if (rect.width === 0 && rect.height === 0) continue;
+                    var score = 0;
+                    var placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
+                    var name = (el.getAttribute('name') || '').toLowerCase();
+                    var id = (el.id || '').toLowerCase();
+                    var ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                    var type = (el.getAttribute('type') || '').toLowerCase();
+                    var labelText = '';
+                    if (el.id) {
+                        var lbl = document.querySelector('label[for=' + JSON.stringify(el.id) + ']');
+                        if (lbl) labelText = (lbl.innerText || '').toLowerCase().trim();
                     }
-                } else if (best.getAttribute('contenteditable')) {
-                    best.innerText = fillValue;
-                } else {
-                    try {
-                        var proto = best instanceof HTMLTextAreaElement ? HTMLTextAreaElement : HTMLInputElement;
-                        var nativeSetter = Object.getOwnPropertyDescriptor(proto.prototype, 'value');
-                        if (nativeSetter && nativeSetter.set) {
-                            nativeSetter.set.call(best, fillValue);
-                        } else {
+                    if (!labelText) {
+                        var parent = el.closest('label');
+                        if (parent) labelText = (parent.innerText || '').toLowerCase().trim();
+                    }
+                    if (labelText === match) score += 100;
+                    else if (labelText.indexOf(match) !== -1) score += 80;
+                    if (placeholder === match) score += 100;
+                    else if (placeholder.indexOf(match) !== -1) score += 70;
+                    if (ariaLabel === match) score += 100;
+                    else if (ariaLabel.indexOf(match) !== -1) score += 70;
+                    if (name === match) score += 90;
+                    else if (name.indexOf(match) !== -1) score += 60;
+                    if (id === match) score += 80;
+                    else if (id.indexOf(match) !== -1) score += 50;
+                    if (type === match) score += 30;
+                    if (score > bestScore) { best = el; bestScore = score; }
+                }
+                if (best && bestScore > 0) {
+                    best.focus();
+                    if (best.tagName.toLowerCase() === 'select') {
+                        for (var j = 0; j < best.options.length; j++) {
+                            if (best.options[j].text.toLowerCase().indexOf(fillValue.toLowerCase()) !== -1 ||
+                                best.options[j].value.toLowerCase().indexOf(fillValue.toLowerCase()) !== -1) {
+                                best.selectedIndex = j;
+                                break;
+                            }
+                        }
+                    } else if (best.getAttribute('contenteditable')) {
+                        best.innerText = fillValue;
+                    } else {
+                        try {
+                            var proto = best instanceof HTMLTextAreaElement ? HTMLTextAreaElement : HTMLInputElement;
+                            var nativeSetter = Object.getOwnPropertyDescriptor(proto.prototype, 'value');
+                            if (nativeSetter && nativeSetter.set) {
+                                nativeSetter.set.call(best, fillValue);
+                            } else {
+                                best.value = fillValue;
+                            }
+                        } catch(e) {
                             best.value = fillValue;
                         }
-                    } catch(e) {
-                        best.value = fillValue;
                     }
+                    best.dispatchEvent(new Event('input', {bubbles: true}));
+                    best.dispatchEvent(new Event('change', {bubbles: true}));
+                    var matchedName = best.getAttribute('name') || best.getAttribute('placeholder') || best.id || best.tagName;
+                    return JSON.stringify({success: true, action: 'fill', matched: matchedName, score: bestScore, value: fillValue});
                 }
-                best.dispatchEvent(new Event('input', {bubbles: true}));
-                best.dispatchEvent(new Event('change', {bubbles: true}));
-                var matchedName = best.getAttribute('name') || best.getAttribute('placeholder') || best.id || best.tagName;
-                return JSON.stringify({success: true, action: 'fill', matched: matchedName, score: bestScore, value: fillValue});
+                return JSON.stringify({success: false, error: 'No input matching: ' + match});
+            } catch(e) {
+                return JSON.stringify({success: false, error: 'JS error: ' + (e.message || String(e))});
             }
-            return JSON.stringify({success: false, error: 'No input matching: ' + match});
         })()
         """#
     }

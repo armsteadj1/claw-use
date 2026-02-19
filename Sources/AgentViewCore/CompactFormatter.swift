@@ -325,6 +325,49 @@ public enum CompactFormatter {
         return parts.joined(separator: " | ")
     }
 
+    // MARK: - Web Navigate
+
+    /// Format web navigate result: `→ Example Domain (https://example.com/)`
+    public static func formatWebNavigate(data: [String: AnyCodable]) -> String {
+        let success = data["success"]?.value as? Bool ?? false
+        if !success {
+            let error = data["error"]?.value as? String ?? "navigation failed"
+            return "❌ \(error)"
+        }
+        let title = data["title"]?.value as? String ?? ""
+        let url = data["url"]?.value as? String ?? ""
+        return "→ \(title) (\(url))"
+    }
+
+    // MARK: - Web Click
+
+    /// Format web click result: `✅ clicked "Learn more" (score: 100)`
+    public static func formatWebClick(data: [String: AnyCodable]) -> String {
+        let success = data["success"]?.value as? Bool ?? false
+        if !success {
+            let error = data["error"]?.value as? String ?? "click failed"
+            return "❌ \(error)"
+        }
+        let matched = data["matched"]?.value as? String ?? ""
+        let score = data["score"]?.value as? Int ?? 0
+        return "✅ clicked \"\(matched)\" (score: \(score))"
+    }
+
+    // MARK: - Web Fill
+
+    /// Format web fill result: `✅ filled "q" = "search term" (score: 100)`
+    public static func formatWebFill(data: [String: AnyCodable]) -> String {
+        let success = data["success"]?.value as? Bool ?? false
+        if !success {
+            let error = data["error"]?.value as? String ?? "fill failed"
+            return "❌ \(error)"
+        }
+        let matched = data["matched"]?.value as? String ?? ""
+        let filledValue = data["value"]?.value as? String ?? ""
+        let score = data["score"]?.value as? Int ?? 0
+        return "✅ filled \"\(matched)\" = \"\(filledValue)\" (score: \(score))"
+    }
+
     // MARK: - Helpers
 
     private static func extractHost(from urlString: String) -> String {

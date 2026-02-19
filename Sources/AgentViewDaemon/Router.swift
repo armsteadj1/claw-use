@@ -126,7 +126,43 @@ final class Router {
             depth: depth
         )
 
-        let result = transportRouter.execute(action: action)
+        var result = transportRouter.execute(action: action)
+
+        // If AX returned empty (0 enriched elements / no sections), try fallback transports.
+        // This happens when the display is off or the screen is locked.
+        if result.success, result.transportUsed == "ax" {
+            let isEmpty: Bool
+            if let data = result.data,
+               let snapshotData = try? JSONOutput.encode(AnyCodable(data)),
+               let snapshot = try? JSONDecoder().decode(AppSnapshot.self, from: snapshotData) {
+                isEmpty = snapshot.stats.enrichedElements == 0 || snapshot.content.sections.isEmpty
+            } else {
+                isEmpty = true
+            }
+
+            if isEmpty {
+                let isSafari = runningApp.bundleIdentifier?.lowercased().contains("safari") == true
+                    || resolvedName.lowercased().contains("safari")
+                if isSafari {
+                    // Safari: use SafariTransport.pageSnapshot() which works even when screen is locked
+                    let fallback = safariTransport.pageSnapshot()
+                    if fallback.success {
+                        result = fallback
+                    }
+                } else {
+                    // Non-Safari: try AppleScript transport via the router (skip AX)
+                    let scriptAction = TransportAction(
+                        type: "script", app: resolvedName,
+                        bundleId: runningApp.bundleIdentifier,
+                        pid: runningApp.processIdentifier, depth: depth
+                    )
+                    let fallback = transportRouter.execute(action: scriptAction)
+                    if fallback.success {
+                        result = fallback
+                    }
+                }
+            }
+        }
 
         // Cache successful snapshot results
         if result.success, let data = result.data,
@@ -206,6 +242,41 @@ final class Router {
 
         guard let matchStr = matchStr else {
             return JSONRPCResponse(error: JSONRPCError(code: -5, message: "--match required for pipe"), id: id)
+        }
+
+        // Check if AX snapshot is empty (display off / screen locked)
+        let axEmpty = snapshot.stats.enrichedElements == 0 || snapshot.content.sections.isEmpty
+        let resolvedName = runningApp.localizedName ?? "Unknown"
+        let isSafari = runningApp.bundleIdentifier?.lowercased().contains("safari") == true
+            || resolvedName.lowercased().contains("safari")
+
+        // If AX is empty and app is Safari, fall back to Safari transport for the entire pipe flow
+        if axEmpty && isSafari {
+            let action = actionStr.lowercased()
+            if action == "click" {
+                let clickResult = safariTransport.clickElement(match: matchStr)
+                return transportResultToResponse(clickResult, id: id)
+            } else if action == "fill" {
+                let fillResult = safariTransport.fillElement(match: matchStr, value: value)
+                return transportResultToResponse(fillResult, id: id)
+            } else if action == "read" {
+                // For read, get a Safari page snapshot and return basic info
+                let snapResult = safariTransport.pageSnapshot()
+                return transportResultToResponse(snapResult, id: id)
+            }
+        }
+
+        // If AX is empty and non-Safari, try AppleScript transport via the router
+        if axEmpty && !isSafari {
+            let scriptAction = TransportAction(
+                type: "script", app: resolvedName,
+                bundleId: runningApp.bundleIdentifier,
+                pid: runningApp.processIdentifier
+            )
+            let fallback = transportRouter.execute(action: scriptAction)
+            if fallback.success {
+                return transportResultToResponse(fallback, id: id)
+            }
         }
 
         let needle = matchStr.lowercased()
@@ -408,14 +479,14 @@ final class Router {
     private func handleWebClick(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
         let match = params["match"]?.value as? String
         let result = safariTransport.clickElement(match: match)
-        return transportResultToResponse(result, id: id)
+        return webJSResultToResponse(result, id: id)
     }
 
     private func handleWebFill(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
         let match = params["match"]?.value as? String
         let value = params["value"]?.value as? String
         let result = safariTransport.fillElement(match: match, value: value)
-        return transportResultToResponse(result, id: id)
+        return webJSResultToResponse(result, id: id)
     }
 
     private func handleWebExtract(id: AnyCodable?) -> JSONRPCResponse {
@@ -515,6 +586,20 @@ final class Router {
             return AXBridge.findApp(named: name)
         }
         return nil
+    }
+
+    /// Parse JS JSON result from web click/fill and flatten into response dict.
+    /// The JS IIFE returns a JSON string in the "result" key; we parse it and merge top-level.
+    private func webJSResultToResponse(_ result: TransportResult, id: AnyCodable?) -> JSONRPCResponse {
+        guard result.success, let data = result.data,
+              let raw = data["result"]?.value as? String,
+              let jsonData = raw.data(using: .utf8),
+              let parsed = try? JSONDecoder().decode([String: AnyCodable].self, from: jsonData) else {
+            return transportResultToResponse(result, id: id)
+        }
+        var output = parsed
+        output["transport_used"] = AnyCodable(result.transportUsed)
+        return JSONRPCResponse(result: AnyCodable(output), id: id)
     }
 
     private func transportResultToResponse(_ result: TransportResult, id: AnyCodable?) -> JSONRPCResponse {
