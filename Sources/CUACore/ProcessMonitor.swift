@@ -1,6 +1,5 @@
 import Foundation
-// kevent_wrapper() is provided by kevent_shim.c — disambiguates the kevent()
-// syscall from the kevent struct, which Swift 6 cannot resolve.
+import CKeventShim  // kevent_wrapper() — disambiguates kevent() syscall from struct in Swift 6
 
 // MARK: - Process Event Types
 
