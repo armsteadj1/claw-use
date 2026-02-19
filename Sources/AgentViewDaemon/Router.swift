@@ -139,60 +139,29 @@ final class Router {
 
         var result = transportRouter.execute(action: action)
 
-        // If AX returned empty (0 enriched elements / no sections), try fallback transports.
-        // This happens when the display is off or the screen is locked.
-        if result.success {
-            let isEmpty: Bool
-            if let data = result.data {
-                // Check enriched_elements directly from the dict
-                // AnyCodable wraps values — need to unwrap carefully
-                let statsAny = data["stats"]?.value
-                var enriched = 0
-                if let statsDict = statsAny as? [String: AnyCodable] {
-                    enriched = (statsDict["enriched_elements"]?.value as? Int) ?? (statsDict["enrichedElements"]?.value as? Int) ?? 0
-                } else if let statsDict = statsAny as? [String: Any] {
-                    enriched = (statsDict["enriched_elements"] as? Int) ?? (statsDict["enrichedElements"] as? Int) ?? 0
-                }
-                let contentAny = data["content"]?.value
-                var sectionsEmpty = true
-                if let contentDict = contentAny as? [String: AnyCodable] {
-                    if let sections = contentDict["sections"]?.value as? [Any] {
-                        sectionsEmpty = sections.isEmpty
-                    }
-                } else if let contentDict = contentAny as? [String: Any] {
-                    if let sections = contentDict["sections"] as? [Any] {
-                        sectionsEmpty = sections.isEmpty
-                    }
-                }
-                isEmpty = enriched == 0 || sectionsEmpty
-                log("[snapshot] enriched=\(enriched), sectionsEmpty=\(sectionsEmpty), isEmpty=\(isEmpty), transport=\(result.transportUsed)")
-            } else {
-                isEmpty = true
-                log("[snapshot] no data, isEmpty=true")
-            }
+        // If primary transport failed (e.g., AX returned 0 elements when display is off),
+        // try fallback transports directly. Safari uses pageSnapshot(), others use AppleScript.
+        if !result.success {
+            let bundleId = runningApp.bundleIdentifier?.lowercased() ?? ""
+            let isSafari = bundleId.contains("safari") || resolvedName.lowercased().contains("safari")
+            log("[snapshot] primary failed (\(result.error ?? "unknown")), attempting fallback: isSafari=\(isSafari)")
 
-            if isEmpty {
-                let bundleId = runningApp.bundleIdentifier?.lowercased() ?? ""
-                let isSafari = bundleId.contains("safari") || resolvedName.lowercased().contains("safari")
-                log("[snapshot] fallback: isSafari=\(isSafari), bundleId=\(bundleId), name=\(resolvedName)")
-                if isSafari {
-                    // Safari: use SafariTransport.pageSnapshot() which works even when screen is locked
-                    let fallback = safariTransport.pageSnapshot()
-                    log("[snapshot] Safari fallback: success=\(fallback.success), error=\(fallback.error ?? "none")")
-                    if fallback.success {
-                        result = fallback
-                    }
-                } else {
-                    // Non-Safari: try AppleScript transport via the router (skip AX)
-                    let scriptAction = TransportAction(
-                        type: "script", app: resolvedName,
-                        bundleId: runningApp.bundleIdentifier,
-                        pid: runningApp.processIdentifier, depth: depth
-                    )
-                    let fallback = transportRouter.execute(action: scriptAction)
-                    if fallback.success {
-                        result = fallback
-                    }
+            if isSafari {
+                let fallback = safariTransport.pageSnapshot()
+                log("[snapshot] Safari fallback: success=\(fallback.success), error=\(fallback.error ?? "none")")
+                if fallback.success {
+                    result = fallback
+                }
+            } else {
+                // Non-Safari: try AppleScript transport
+                let scriptAction = TransportAction(
+                    type: "script", app: resolvedName,
+                    bundleId: runningApp.bundleIdentifier,
+                    pid: runningApp.processIdentifier, depth: depth
+                )
+                let fallback = transportRouter.execute(action: scriptAction)
+                if fallback.success {
+                    result = fallback
                 }
             }
         }
