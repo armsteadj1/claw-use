@@ -89,14 +89,16 @@ let transportRouter = TransportRouter()
 let axTransport = AXTransport()
 let cdpTransport = CDPTransport(pool: cdpPool)
 let appleScriptTransport = AppleScriptTransport()
+let safariTransport = SafariTransport()
 
 transportRouter.register(transport: axTransport)
 transportRouter.register(transport: cdpTransport)
 transportRouter.register(transport: appleScriptTransport)
+transportRouter.register(transport: safariTransport)
 transportRouter.configureDefaults()
 
 let router = Router(screenState: screenState, cdpPool: cdpPool, transportRouter: transportRouter,
-                    snapshotCache: snapshotCache, eventBus: eventBus)
+                    snapshotCache: snapshotCache, eventBus: eventBus, safariTransport: safariTransport)
 let server = Server(router: router)
 
 // Write PID file
@@ -115,7 +117,7 @@ do {
 }
 
 log("agentviewd ready (pid \(ProcessInfo.processInfo.processIdentifier))")
-log("  transports: ax, cdp, applescript")
+log("  transports: ax, cdp, applescript, safari")
 log("  event bus: monitoring app lifecycle + AX notifications")
 log("  cache: TTL ax=\(snapshotCache.axTTL)s cdp=\(snapshotCache.cdpTTL)s applescript=\(snapshotCache.applescriptTTL)s")
 

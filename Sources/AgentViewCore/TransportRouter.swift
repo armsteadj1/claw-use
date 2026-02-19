@@ -70,11 +70,11 @@ public final class TransportRouter {
             preferredOrder: ["applescript", "ax"]
         ))
 
-        // Safari: prefer AppleScript (do JavaScript support)
+        // Safari: prefer Safari transport, then AppleScript, then AX
         addPreference(TransportPreference(
             appNamePattern: "Safari",
             bundleIdPattern: "com.apple.Safari",
-            preferredOrder: ["applescript", "ax"]
+            preferredOrder: ["safari", "applescript", "ax"]
         ))
     }
 
@@ -161,6 +161,8 @@ public final class TransportRouter {
             return actionType == "eval"
         case "applescript":
             return actionType == "script"
+        case "safari":
+            return actionType.hasPrefix("safari_")
         default:
             return true
         }
@@ -188,6 +190,8 @@ public final class TransportRouter {
                 } else if let statsTransport = transport as? CDPTransport {
                     successRates[transport.name] = statsTransport.stats.successRate
                 } else if let statsTransport = transport as? AppleScriptTransport {
+                    successRates[transport.name] = statsTransport.stats.successRate
+                } else if let statsTransport = transport as? SafariTransport {
                     successRates[transport.name] = statsTransport.stats.successRate
                 }
             }

@@ -11,14 +11,16 @@ final class Router {
     private let transportRouter: TransportRouter
     let snapshotCache: SnapshotCache
     let eventBus: EventBus
+    private let safariTransport: SafariTransport
 
     init(screenState: ScreenState, cdpPool: CDPConnectionPool, transportRouter: TransportRouter,
-         snapshotCache: SnapshotCache, eventBus: EventBus) {
+         snapshotCache: SnapshotCache, eventBus: EventBus, safariTransport: SafariTransport) {
         self.screenState = screenState
         self.cdpPool = cdpPool
         self.transportRouter = transportRouter
         self.snapshotCache = snapshotCache
         self.eventBus = eventBus
+        self.safariTransport = safariTransport
     }
 
     func handle(_ request: JSONRPCRequest) -> JSONRPCResponse {
@@ -41,6 +43,20 @@ final class Router {
             return handleSubscribe(params: params, id: request.id)
         case "events":
             return handleEvents(params: params, id: request.id)
+        case "web.tabs":
+            return handleWebTabs(id: request.id)
+        case "web.navigate":
+            return handleWebNavigate(params: params, id: request.id)
+        case "web.snapshot":
+            return handleWebSnapshot(id: request.id)
+        case "web.click":
+            return handleWebClick(params: params, id: request.id)
+        case "web.fill":
+            return handleWebFill(params: params, id: request.id)
+        case "web.extract":
+            return handleWebExtract(id: request.id)
+        case "web.switchTab":
+            return handleWebSwitchTab(params: params, id: request.id)
         default:
             return JSONRPCResponse(error: .methodNotFound, id: request.id)
         }
@@ -355,6 +371,48 @@ final class Router {
         }
 
         return JSONRPCResponse(result: AnyCodable(encoded.map { $0 }), id: id)
+    }
+
+    // MARK: - web.* handlers (Safari Transport)
+
+    private func handleWebTabs(id: AnyCodable?) -> JSONRPCResponse {
+        let result = safariTransport.listTabs()
+        return transportResultToResponse(result, id: id)
+    }
+
+    private func handleWebNavigate(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        let url = params["url"]?.value as? String
+        let result = safariTransport.navigate(url: url)
+        return transportResultToResponse(result, id: id)
+    }
+
+    private func handleWebSnapshot(id: AnyCodable?) -> JSONRPCResponse {
+        let result = safariTransport.pageSnapshot()
+        return transportResultToResponse(result, id: id)
+    }
+
+    private func handleWebClick(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        let match = params["match"]?.value as? String
+        let result = safariTransport.clickElement(match: match)
+        return transportResultToResponse(result, id: id)
+    }
+
+    private func handleWebFill(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        let match = params["match"]?.value as? String
+        let value = params["value"]?.value as? String
+        let result = safariTransport.fillElement(match: match, value: value)
+        return transportResultToResponse(result, id: id)
+    }
+
+    private func handleWebExtract(id: AnyCodable?) -> JSONRPCResponse {
+        let result = safariTransport.extractContent()
+        return transportResultToResponse(result, id: id)
+    }
+
+    private func handleWebSwitchTab(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        let match = params["match"]?.value as? String
+        let result = safariTransport.switchTab(match: match)
+        return transportResultToResponse(result, id: id)
     }
 
     // MARK: - Helpers

@@ -1180,6 +1180,142 @@ final class MockTransport: Transport {
     #expect(sub.matches(AgentViewEvent(type: "app.activated", app: "Safari")) == false)
 }
 
+// MARK: - PageAnalyzer Tests
+
+@Test func pageAnalyzerAnalysisScriptExists() {
+    let script = PageAnalyzer.analysisScript
+    #expect(!script.isEmpty)
+    #expect(script.contains("pageType"))
+    #expect(script.contains("JSON.stringify"))
+    #expect(script.contains("forms"))
+    #expect(script.contains("headings"))
+    #expect(script.contains("mainContent"))
+}
+
+@Test func pageAnalyzerExtractionScriptExists() {
+    let script = PageAnalyzer.extractionScript
+    #expect(!script.isEmpty)
+    #expect(script.contains("nodeToMarkdown"))
+    #expect(script.contains("article"))
+    #expect(script.contains("substring"))
+}
+
+// MARK: - WebElementMatcher Tests
+
+@Test func webElementMatcherEnumerationScript() {
+    let script = WebElementMatcher.enumerationScript
+    #expect(!script.isEmpty)
+    #expect(script.contains("querySelectorAll"))
+    #expect(script.contains("data-agentview-ref"))
+    #expect(script.contains("JSON.stringify"))
+}
+
+@Test func webElementMatcherClickScript() {
+    let script = WebElementMatcher.clickScript(match: "Submit")
+    #expect(script.contains("submit"))
+    #expect(script.contains("click"))
+    #expect(script.contains("bestScore"))
+}
+
+@Test func webElementMatcherFillScript() {
+    let script = WebElementMatcher.fillScript(match: "email", value: "test@example.com")
+    #expect(script.contains("email"))
+    #expect(script.contains("test@example.com"))
+    #expect(script.contains("fillValue"))
+    #expect(script.contains("dispatchEvent"))
+}
+
+@Test func webElementMatcherFuzzyScoreExactMatch() {
+    let score = WebElementMatcher.fuzzyScore(
+        query: "submit",
+        text: "Submit",
+        ariaLabel: nil,
+        placeholder: nil,
+        name: nil,
+        id: nil
+    )
+    #expect(score == 100)
+}
+
+@Test func webElementMatcherFuzzyScorePartialMatch() {
+    let score = WebElementMatcher.fuzzyScore(
+        query: "sub",
+        text: "Submit Button",
+        ariaLabel: nil,
+        placeholder: nil,
+        name: nil,
+        id: nil
+    )
+    #expect(score == 80) // text contains query
+}
+
+@Test func webElementMatcherFuzzyScoreNoMatch() {
+    let score = WebElementMatcher.fuzzyScore(
+        query: "delete",
+        text: "Submit",
+        ariaLabel: nil,
+        placeholder: nil,
+        name: nil,
+        id: nil
+    )
+    #expect(score == 0)
+}
+
+@Test func webElementMatcherFuzzyScoreMultipleFields() {
+    let score = WebElementMatcher.fuzzyScore(
+        query: "email",
+        text: nil,
+        ariaLabel: "Email address",
+        placeholder: "Enter email",
+        name: "email",
+        id: "email-input"
+    )
+    // ariaLabel contains: 70, placeholder contains: 60, name exact: 90, id contains: 40
+    #expect(score == 260)
+}
+
+// MARK: - SafariTransport Tests
+
+@Test func safariTransportCanHandleSafari() {
+    let transport = SafariTransport()
+    #expect(transport.canHandle(app: "Safari", bundleId: "com.apple.Safari") == true)
+    #expect(transport.canHandle(app: "safari", bundleId: nil) == true)
+    #expect(transport.canHandle(app: "Safari Technology Preview", bundleId: "com.apple.SafariTechnologyPreview") == true)
+}
+
+@Test func safariTransportCannotHandleOtherApps() {
+    let transport = SafariTransport()
+    #expect(transport.canHandle(app: "Finder", bundleId: "com.apple.finder") == false)
+    #expect(transport.canHandle(app: "Chrome", bundleId: "com.google.Chrome") == false)
+    #expect(transport.canHandle(app: "Notes", bundleId: "com.apple.Notes") == false)
+}
+
+@Test func safariTransportName() {
+    let transport = SafariTransport()
+    #expect(transport.name == "safari")
+}
+
+@Test func safariTransportHealthStartsHealthy() {
+    let transport = SafariTransport()
+    #expect(transport.health() == .healthy)
+}
+
+@Test func safariTransportHealthDegrades() {
+    let transport = SafariTransport()
+    for _ in 0..<6 {
+        transport.stats.recordFailure()
+    }
+    #expect(transport.health() == .dead)
+}
+
+@Test func safariTransportRejectsUnsupportedAction() {
+    let transport = SafariTransport()
+    let action = TransportAction(type: "snapshot", app: "Safari", bundleId: "com.apple.Safari", pid: 1)
+    let result = transport.execute(action: action)
+    #expect(result.success == false)
+    #expect(result.error?.contains("does not support") == true)
+}
+
 // MARK: - Test Helpers
 
 func makeTestSnapshot(app: String) -> AppSnapshot {

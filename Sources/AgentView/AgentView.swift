@@ -10,7 +10,7 @@ struct AgentView: ParsableCommand {
         commandName: "agentview",
         abstract: "Read macOS Accessibility APIs and expose structured UI state to AI agents.",
         version: "0.3.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self]
     )
 }
 
@@ -839,5 +839,120 @@ struct Watch: ParsableCommand {
         if let types = types { params["types"] = AnyCodable(types) }
 
         try DaemonClient.stream(params: params)
+    }
+}
+
+// MARK: - web
+
+struct Web: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Safari web automation commands",
+        subcommands: [WebTabs.self, WebNavigate.self, WebSnapshot.self, WebClick.self, WebFill.self, WebExtract.self, WebTab.self]
+    )
+}
+
+struct WebTabs: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "tabs", abstract: "List all open Safari tabs")
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        let response = try callDaemon(method: "web.tabs")
+        try printResponse(response, pretty: pretty)
+    }
+}
+
+struct WebNavigate: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "navigate", abstract: "Navigate Safari to a URL")
+
+    @Argument(help: "URL to navigate to")
+    var url: String
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        let params: [String: AnyCodable] = ["url": AnyCodable(url)]
+        let response = try callDaemon(method: "web.navigate", params: params)
+        try printResponse(response, pretty: pretty)
+    }
+}
+
+struct WebSnapshot: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "snapshot", abstract: "Semantic snapshot of the current Safari page")
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        let response = try callDaemon(method: "web.snapshot")
+        try printResponse(response, pretty: pretty)
+    }
+}
+
+struct WebClick: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "click", abstract: "Click a web element by fuzzy match")
+
+    @Argument(help: "Text to fuzzy match (button text, link text, aria-label)")
+    var match: String
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        let params: [String: AnyCodable] = ["match": AnyCodable(match)]
+        let response = try callDaemon(method: "web.click", params: params)
+        try printResponse(response, pretty: pretty)
+    }
+}
+
+struct WebFill: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "fill", abstract: "Fill a form field by fuzzy match")
+
+    @Argument(help: "Field to match (placeholder, label, name, id)")
+    var match: String
+
+    @Option(name: .long, help: "Value to fill")
+    var value: String
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        let params: [String: AnyCodable] = [
+            "match": AnyCodable(match),
+            "value": AnyCodable(value),
+        ]
+        let response = try callDaemon(method: "web.fill", params: params)
+        try printResponse(response, pretty: pretty)
+    }
+}
+
+struct WebExtract: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "extract", abstract: "Extract page content as markdown")
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        let response = try callDaemon(method: "web.extract")
+        try printResponse(response, pretty: pretty)
+    }
+}
+
+struct WebTab: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "tab", abstract: "Switch to a Safari tab by fuzzy match")
+
+    @Argument(help: "Tab title or URL to match")
+    var match: String
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        let params: [String: AnyCodable] = ["match": AnyCodable(match)]
+        let response = try callDaemon(method: "web.switchTab", params: params)
+        try printResponse(response, pretty: pretty)
     }
 }
