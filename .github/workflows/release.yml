@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+
+      - name: Build arm64
+        run: swift build -c release --arch arm64
+
+      - name: Build x86_64
+        run: swift build -c release --arch x86_64
+
+      - name: Create universal binaries
+        run: |
+          mkdir -p dist
+          lipo -create \
+            .build/arm64-apple-macosx/release/cua \
+            .build/x86_64-apple-macosx/release/cua \
+            -output dist/cua
+          lipo -create \
+            .build/arm64-apple-macosx/release/cuad \
+            .build/x86_64-apple-macosx/release/cuad \
+            -output dist/cuad
+          chmod +x dist/cua dist/cuad
+
+      - name: Verify universal binaries
+        run: |
+          file dist/cua
+          file dist/cuad
+          lipo -info dist/cua
+          lipo -info dist/cuad
+
+      - name: Create tarball
+        run: |
+          cd dist
+          tar czf cua-macos-universal.tar.gz cua cuad
+          shasum -a 256 cua-macos-universal.tar.gz > cua-macos-universal.tar.gz.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/cua-macos-universal.tar.gz
+            dist/cua-macos-universal.tar.gz.sha256

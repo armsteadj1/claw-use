@@ -117,16 +117,30 @@ The **self-healing router** picks the best transport per app and auto-falls back
 
 ## Install
 
+### Homebrew (recommended)
+
 ```bash
-# Build from source
+brew install thegreysky/tap/cua
+```
+
+### Shell script
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thegreysky/agentview/main/install.sh | sh
+```
+
+### Build from source
+
+```bash
 git clone https://github.com/thegreysky/agentview.git
 cd agentview
 swift build -c release
+cp .build/release/cua .build/release/cuad ~/.local/bin/
+```
 
-# Install binaries
-cp .build/release/cua ~/.local/bin/
-cp .build/release/cuad ~/.local/bin/
+### Setup
 
+```bash
 # Start the daemon
 cua daemon start
 
