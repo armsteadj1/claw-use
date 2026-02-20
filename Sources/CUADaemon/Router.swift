@@ -232,12 +232,26 @@ final class Router {
 
     // MARK: - pipe
 
+    /// Normalize a raw fuzzy score (0–∞) to a 0-1 confidence value.
+    /// The scoring system awards up to 100 for an exact label match,
+    /// so we divide by 100 and clamp to [0, 1].
+    private func normalizeScore(_ raw: Int) -> Double {
+        min(Double(raw) / 100.0, 1.0)
+    }
+
+    /// Ambiguity delta — when the top two confidence scores are within
+    /// this range, we flag the match as ambiguous.
+    private static let ambiguityDelta: Double = 0.1
+
     private func handlePipe(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
         let appName = params["app"]?.value as? String
         let pid = params["pid"]?.value as? Int
         let actionStr = params["action"]?.value as? String ?? ""
         let matchStr = params["match"]?.value as? String
         let value = params["value"]?.value as? String
+        let strict = params["strict"]?.value as? Bool ?? false
+        let threshold = params["threshold"]?.value as? Double ?? 0.7
+        let verbose = params["verbose"]?.value as? Bool ?? false
 
         // eval/script fast-path — route through transport layer
         if actionStr.lowercased() == "eval" || actionStr.lowercased() == "script" {
@@ -296,15 +310,13 @@ final class Router {
         }
 
         let needle = matchStr.lowercased()
-        var bestMatch: (ref: String, score: Int, label: String)?
+        var allMatches: [(ref: String, score: Int, label: String)] = []
 
         for section in snapshot.content.sections {
             for element in section.elements {
                 let score = fuzzyScore(needle: needle, element: element, sectionLabel: section.label)
                 if score > 0 {
-                    if bestMatch == nil || score > bestMatch!.score {
-                        bestMatch = (ref: element.ref, score: score, label: element.label ?? element.role)
-                    }
+                    allMatches.append((ref: element.ref, score: score, label: element.label ?? element.role))
                 }
             }
         }
@@ -313,15 +325,15 @@ final class Router {
             if let ref = inferredAction.ref {
                 let haystack = "\(inferredAction.name) \(inferredAction.description)".lowercased()
                 if haystack.contains(needle) {
-                    let score = 50
-                    if bestMatch == nil || score > bestMatch!.score {
-                        bestMatch = (ref: ref, score: score, label: inferredAction.name)
-                    }
+                    allMatches.append((ref: ref, score: 50, label: inferredAction.name))
                 }
             }
         }
 
-        guard let matched = bestMatch else {
+        // Sort by score descending
+        allMatches.sort { $0.score > $1.score }
+
+        guard let matched = allMatches.first else {
             let available = snapshot.content.sections.flatMap { $0.elements }
                 .map { "\($0.ref):\($0.label ?? $0.role)" }.joined(separator: ", ")
             return JSONRPCResponse(
@@ -330,16 +342,67 @@ final class Router {
             )
         }
 
-        if actionStr.lowercased() == "read" {
-            let result: [String: AnyCodable] = [
-                "success": AnyCodable(true),
+        let bestConfidence = normalizeScore(matched.score)
+
+        // Ambiguity detection: top two matches within delta
+        var ambiguityWarning: String? = nil
+        if allMatches.count >= 2 {
+            let runnerConfidence = normalizeScore(allMatches[1].score)
+            if bestConfidence - runnerConfidence < Self.ambiguityDelta {
+                ambiguityWarning = "ambiguous match: \"\(matched.label)\" (\(String(format: "%.2f", bestConfidence))) vs \"\(allMatches[1].label)\" (\(String(format: "%.2f", runnerConfidence)))"
+            }
+        }
+
+        // Strict mode: fail if below threshold or ambiguous
+        if strict {
+            if bestConfidence < threshold {
+                return JSONRPCResponse(
+                    error: JSONRPCError(code: -7,
+                        message: "strict mode: best match \"\(matched.label)\" confidence \(String(format: "%.2f", bestConfidence)) is below threshold \(String(format: "%.2f", threshold))"),
+                    id: id)
+            }
+            if let warning = ambiguityWarning {
+                return JSONRPCResponse(
+                    error: JSONRPCError(code: -8, message: "strict mode: \(warning), specify further"),
+                    id: id)
+            }
+        }
+
+        // Build runner-ups list (top 5 excluding best)
+        let runnerUps = Array(allMatches.dropFirst().prefix(5)).map { m in
+            AnyCodable([
+                "ref": AnyCodable(m.ref),
+                "label": AnyCodable(m.label),
+                "score": AnyCodable(m.score),
+                "confidence": AnyCodable(normalizeScore(m.score)),
+            ] as [String: AnyCodable])
+        }
+
+        // Helper to build the match output dictionary
+        func buildOutput(success: Bool, action: String, error: String? = nil) -> [String: AnyCodable] {
+            var out: [String: AnyCodable] = [
+                "success": AnyCodable(success),
                 "app": AnyCodable(snapshot.app),
-                "action": AnyCodable("read"),
+                "action": AnyCodable(action),
                 "matched_ref": AnyCodable(matched.ref),
                 "matched_label": AnyCodable(matched.label),
                 "match_score": AnyCodable(matched.score),
+                "match_confidence": AnyCodable(bestConfidence),
             ]
-            return JSONRPCResponse(result: AnyCodable(result), id: id)
+            if let warning = ambiguityWarning {
+                out["ambiguity_warning"] = AnyCodable(warning)
+            }
+            if verbose || !runnerUps.isEmpty {
+                out["runner_ups"] = AnyCodable(runnerUps)
+            }
+            if let err = error {
+                out["error"] = AnyCodable(err)
+            }
+            return out
+        }
+
+        if actionStr.lowercased() == "read" {
+            return JSONRPCResponse(result: AnyCodable(buildOutput(success: true, action: "read")), id: id)
         }
 
         guard let actionType = ActionExecutor.ActionType(rawValue: actionStr.lowercased()) else {
@@ -349,16 +412,7 @@ final class Router {
         let executor = ActionExecutor(refMap: refMap)
         let result = executor.execute(action: actionType, ref: matched.ref, value: value, on: runningApp, enricher: enricher)
 
-        let output: [String: AnyCodable] = [
-            "success": AnyCodable(result.success),
-            "app": AnyCodable(snapshot.app),
-            "action": AnyCodable(actionStr),
-            "matched_ref": AnyCodable(matched.ref),
-            "matched_label": AnyCodable(matched.label),
-            "match_score": AnyCodable(matched.score),
-            "error": AnyCodable(result.error),
-        ]
-
+        let output = buildOutput(success: result.success, action: actionStr, error: result.error)
         return JSONRPCResponse(result: AnyCodable(output), id: id)
     }
 

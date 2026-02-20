@@ -866,6 +866,23 @@ struct Pipe: ParsableCommand {
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
+    @Flag(name: .long, help: "Fail if match confidence is below threshold")
+    var strict: Bool = false
+
+    @Option(name: .long, help: "Confidence threshold for --strict mode (0.0-1.0, default: 0.7)")
+    var threshold: Double = 0.7
+
+    @Flag(name: .long, help: "Show match details and runner-up matches")
+    var verbose: Bool = false
+
+    /// Normalize a raw fuzzy score to a 0-1 confidence value.
+    private static func normalizeScore(_ raw: Int) -> Double {
+        min(Double(raw) / 100.0, 1.0)
+    }
+
+    /// Ambiguity delta — top two scores within this range trigger a warning.
+    private static let ambiguityDelta: Double = 0.1
+
     func run() throws {
         // Try daemon
         do {
@@ -879,7 +896,22 @@ struct Pipe: ParsableCommand {
             if let expr = expr { params["expr"] = AnyCodable(expr) }
             params["port"] = AnyCodable(port)
             params["timeout"] = AnyCodable(timeout)
+            if strict { params["strict"] = AnyCodable(true) }
+            if threshold != 0.7 { params["threshold"] = AnyCodable(threshold) }
+            if verbose { params["verbose"] = AnyCodable(true) }
             let response = try callDaemon(method: "pipe", params: params)
+            // In verbose mode, print extra match details to stderr before the normal output
+            if verbose, let dict = response as? [String: Any] {
+                let label = dict["matched_label"] as? String ?? "?"
+                let conf = dict["match_confidence"] as? Double ?? 0
+                var msg = "matched \"\(label)\" (\(String(format: "%.2f", conf)))"
+                if let runners = dict["runner_ups"] as? [[String: Any]], let first = runners.first {
+                    let rLabel = first["label"] as? String ?? "?"
+                    let rConf = first["confidence"] as? Double ?? 0
+                    msg += ", runner-up: \"\(rLabel)\" (\(String(format: "%.2f", rConf)))"
+                }
+                fputs("\(msg)\n", stderr)
+            }
             try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
                 CompactFormatter.formatActResult(data: dict)
             }
@@ -921,15 +953,13 @@ struct Pipe: ParsableCommand {
         }
 
         let needle = matchStr.lowercased()
-        var bestMatch: (ref: String, score: Int, label: String)?
+        var allMatches: [(ref: String, score: Int, label: String)] = []
 
         for section in snapshot.content.sections {
             for element in section.elements {
                 let score = fuzzyScore(needle: needle, element: element, sectionLabel: section.label)
                 if score > 0 {
-                    if bestMatch == nil || score > bestMatch!.score {
-                        bestMatch = (ref: element.ref, score: score, label: element.label ?? element.role)
-                    }
+                    allMatches.append((ref: element.ref, score: score, label: element.label ?? element.role))
                 }
             }
         }
@@ -938,15 +968,15 @@ struct Pipe: ParsableCommand {
             if let ref = inferredAction.ref {
                 let haystack = "\(inferredAction.name) \(inferredAction.description)".lowercased()
                 if haystack.contains(needle) {
-                    let score = 50
-                    if bestMatch == nil || score > bestMatch!.score {
-                        bestMatch = (ref: ref, score: score, label: inferredAction.name)
-                    }
+                    allMatches.append((ref: ref, score: 50, label: inferredAction.name))
                 }
             }
         }
 
-        guard let matched = bestMatch else {
+        // Sort by score descending
+        allMatches.sort { $0.score > $1.score }
+
+        guard let matched = allMatches.first else {
             let output: [String: AnyCodable] = [
                 "success": AnyCodable(false),
                 "error": AnyCodable("No element matching '\(matchStr)' found."),
@@ -960,15 +990,74 @@ struct Pipe: ParsableCommand {
             throw ExitCode.failure
         }
 
-        if action.lowercased() == "read" {
-            let output: [String: AnyCodable] = [
-                "success": AnyCodable(true),
+        let bestConfidence = Self.normalizeScore(matched.score)
+
+        // Ambiguity detection
+        var ambiguityWarning: String? = nil
+        if allMatches.count >= 2 {
+            let runnerConfidence = Self.normalizeScore(allMatches[1].score)
+            if bestConfidence - runnerConfidence < Self.ambiguityDelta {
+                ambiguityWarning = "ambiguous match: \"\(matched.label)\" (\(String(format: "%.2f", bestConfidence))) vs \"\(allMatches[1].label)\" (\(String(format: "%.2f", runnerConfidence)))"
+            }
+        }
+
+        // Strict mode checks
+        if strict {
+            if bestConfidence < threshold {
+                fputs("ERROR: strict mode: best match \"\(matched.label)\" confidence \(String(format: "%.2f", bestConfidence)) is below threshold \(String(format: "%.2f", threshold))\n", stderr)
+                throw ExitCode.failure
+            }
+            if let warning = ambiguityWarning {
+                fputs("ERROR: strict mode: \(warning), specify further\n", stderr)
+                throw ExitCode.failure
+            }
+        }
+
+        // Build runner-ups (top 5 excluding best)
+        let runnerUps: [AnyCodable] = Array(allMatches.dropFirst().prefix(5)).map { m in
+            AnyCodable([
+                "ref": AnyCodable(m.ref),
+                "label": AnyCodable(m.label),
+                "score": AnyCodable(m.score),
+                "confidence": AnyCodable(Self.normalizeScore(m.score)),
+            ] as [String: AnyCodable])
+        }
+
+        // Verbose stderr output
+        if verbose {
+            var msg = "matched \"\(matched.label)\" (\(String(format: "%.2f", bestConfidence)))"
+            if allMatches.count >= 2 {
+                let r = allMatches[1]
+                msg += ", runner-up: \"\(r.label)\" (\(String(format: "%.2f", Self.normalizeScore(r.score))))"
+            }
+            fputs("\(msg)\n", stderr)
+        }
+
+        // Helper to build output dictionary
+        func buildOutput(success: Bool, actionName: String, error: String? = nil) -> [String: AnyCodable] {
+            var out: [String: AnyCodable] = [
+                "success": AnyCodable(success),
                 "app": AnyCodable(snapshot.app),
-                "action": AnyCodable("read"),
+                "action": AnyCodable(actionName),
                 "matched_ref": AnyCodable(matched.ref),
                 "matched_label": AnyCodable(matched.label),
                 "match_score": AnyCodable(matched.score),
+                "match_confidence": AnyCodable(bestConfidence),
             ]
+            if let warning = ambiguityWarning {
+                out["ambiguity_warning"] = AnyCodable(warning)
+            }
+            if verbose || !runnerUps.isEmpty {
+                out["runner_ups"] = AnyCodable(runnerUps)
+            }
+            if let err = error {
+                out["error"] = AnyCodable(err)
+            }
+            return out
+        }
+
+        if action.lowercased() == "read" {
+            let output = buildOutput(success: true, actionName: "read")
             if format == "compact" {
                 print(CompactFormatter.formatActResult(data: output))
             } else {
@@ -985,17 +1074,7 @@ struct Pipe: ParsableCommand {
         let executor = ActionExecutor(refMap: refMap)
         let result = executor.execute(action: actionType, ref: matched.ref, value: value, on: runningApp, enricher: enricher)
 
-        var output: [String: AnyCodable] = [
-            "success": AnyCodable(result.success),
-            "app": AnyCodable(snapshot.app),
-            "action": AnyCodable(action),
-            "matched_ref": AnyCodable(matched.ref),
-            "matched_label": AnyCodable(matched.label),
-            "match_score": AnyCodable(matched.score),
-        ]
-        if let err = result.error {
-            output["error"] = AnyCodable(err)
-        }
+        let output = buildOutput(success: result.success, actionName: action, error: result.error)
         if format == "compact" {
             print(CompactFormatter.formatActResult(data: output))
         } else {

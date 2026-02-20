@@ -3247,3 +3247,90 @@ func processMonitorLogFileTailing() throws {
 @Test func milestoneEventAllCases() {
     #expect(MilestoneEvent.allCases.count == 9)
 }
+
+// MARK: - Fuzzy Match Confidence Score Tests (#66)
+
+/// Normalize a raw fuzzy score (0–∞) to a 0-1 confidence value,
+/// mirroring the implementation in Pipe and Router.
+private func normalizeScore(_ raw: Int) -> Double {
+    min(Double(raw) / 100.0, 1.0)
+}
+
+@Test func confidenceScoreExactMatchIsOne() {
+    // An exact label match scores 100 → confidence 1.0
+    #expect(normalizeScore(100) == 1.0)
+}
+
+@Test func confidenceScoreContainsMatch() {
+    // label.contains(needle) scores 80 → confidence 0.80
+    #expect(normalizeScore(80) == 0.80)
+}
+
+@Test func confidenceScoreInferredAction() {
+    // Inferred action match scores 50 → confidence 0.50
+    #expect(normalizeScore(50) == 0.50)
+}
+
+@Test func confidenceScoreClampsAboveOne() {
+    // Scores above 100 (multi-field matches) clamp to 1.0
+    #expect(normalizeScore(135) == 1.0)
+    #expect(normalizeScore(200) == 1.0)
+}
+
+@Test func confidenceScoreZero() {
+    #expect(normalizeScore(0) == 0.0)
+}
+
+@Test func ambiguityDetectionWithinDelta() {
+    let delta = 0.1
+    let best = normalizeScore(85)   // 0.85
+    let runner = normalizeScore(80) // 0.80
+    // Difference is 0.05, which is < delta of 0.1 → ambiguous
+    #expect(best - runner < delta)
+}
+
+@Test func ambiguityDetectionOutsideDelta() {
+    let delta = 0.1
+    let best = normalizeScore(100)  // 1.00
+    let runner = normalizeScore(50) // 0.50
+    // Difference is 0.50, which is >= delta of 0.1 → not ambiguous
+    #expect(best - runner >= delta)
+}
+
+@Test func strictModeThresholdDefault() {
+    let threshold = 0.7
+    // Exact match (1.0) passes
+    #expect(normalizeScore(100) >= threshold)
+    // Contains match (0.80) passes
+    #expect(normalizeScore(80) >= threshold)
+    // Inferred action (0.50) fails
+    #expect(normalizeScore(50) < threshold)
+    // Reverse contains only (0.40) fails
+    #expect(normalizeScore(40) < threshold)
+}
+
+@Test func webElementMatcherScoreNormalizesToConfidence() {
+    let score = WebElementMatcher.fuzzyScore(
+        query: "submit",
+        text: "Submit",
+        ariaLabel: nil,
+        placeholder: nil,
+        name: nil,
+        id: nil
+    )
+    // Exact text match = 100 → confidence 1.0
+    #expect(normalizeScore(score) == 1.0)
+}
+
+@Test func webElementMatcherPartialScoreConfidence() {
+    let score = WebElementMatcher.fuzzyScore(
+        query: "sub",
+        text: "Submit Button",
+        ariaLabel: nil,
+        placeholder: nil,
+        name: nil,
+        id: nil
+    )
+    // text.contains = 80 → confidence 0.80
+    #expect(normalizeScore(score) == 0.80)
+}
