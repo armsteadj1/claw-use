@@ -1410,7 +1410,8 @@ final class MockTransport: Transport {
 
 // MARK: - SafariTransport Extract Wrapping Tests (Bug #4)
 
-@Test func safariTransportExtractIsStructuredAction() {
+@Test(.disabled(if: ProcessInfo.processInfo.environment["CI"] != nil, "Spawns Safari/osascript processes that become orphans on CI"))
+func safariTransportExtractIsStructuredAction() {
     let transport = SafariTransport()
     let action = TransportAction(type: "safari_extract", app: "Safari", bundleId: "com.apple.Safari", pid: 1)
     // This will fail because Safari isn't running in test, but proves the code path exists
@@ -2106,7 +2107,8 @@ func makeWebSnapshotData(linkCount: Int) -> [String: AnyCodable] {
     monitor.unwatchAll()
 }
 
-@Test func processMonitorLogFileTailing() throws {
+@Test(.disabled(if: ProcessInfo.processInfo.environment["CI"] != nil, "kqueue/dispatch sources with long sleep prevent clean test runner exit on CI"))
+func processMonitorLogFileTailing() throws {
     let bus = EventBus()
     var received: [CUAEvent] = []
     let lock = NSLock()

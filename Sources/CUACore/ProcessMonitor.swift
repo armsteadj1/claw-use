@@ -344,7 +344,9 @@ public final class ProcessWatcher {
             // Block indefinitely until process exits
             let n = kevent_wrapper(kq, nil, 0, &event, 1, nil)
             guard let self = self else {
-                close(kq)
+                // Do NOT close(kq) here — stop() already closed kqueueFd
+                // (same underlying fd). Double-closing can corrupt an fd
+                // reused by another thread.
                 return
             }
 
