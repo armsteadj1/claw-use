@@ -12,6 +12,7 @@ final class Router {
     let snapshotCache: SnapshotCache
     let eventBus: EventBus
     private let safariTransport: SafariTransport
+    private let browserRouter: BrowserRouter
     let processMonitor: ProcessMonitor
     let processGroup: ProcessGroupManager
 
@@ -38,6 +39,7 @@ final class Router {
 
     init(screenState: ScreenState, cdpPool: CDPConnectionPool, transportRouter: TransportRouter,
          snapshotCache: SnapshotCache, eventBus: EventBus, safariTransport: SafariTransport,
+         browserRouter: BrowserRouter,
          processGroup: ProcessGroupManager) {
         self.screenState = screenState
         self.cdpPool = cdpPool
@@ -45,6 +47,7 @@ final class Router {
         self.snapshotCache = snapshotCache
         self.eventBus = eventBus
         self.safariTransport = safariTransport
+        self.browserRouter = browserRouter
         self.processMonitor = ProcessMonitor(eventBus: eventBus)
         self.processGroup = processGroup
     }
@@ -82,19 +85,21 @@ final class Router {
         case "events.subscriptions":
             return handleSubscriptionsList(id: request.id)
         case "web.tabs":
-            return handleWebTabs(id: request.id)
+            return handleWebTabs(params: params, id: request.id)
         case "web.navigate":
             return handleWebNavigate(params: params, id: request.id)
         case "web.snapshot":
-            return handleWebSnapshot(id: request.id)
+            return handleWebSnapshot(params: params, id: request.id)
         case "web.click":
             return handleWebClick(params: params, id: request.id)
         case "web.fill":
             return handleWebFill(params: params, id: request.id)
         case "web.extract":
-            return handleWebExtract(id: request.id)
+            return handleWebExtract(params: params, id: request.id)
         case "web.switchTab":
             return handleWebSwitchTab(params: params, id: request.id)
+        case "web.eval":
+            return handleWebEval(params: params, id: request.id)
         case "screenshot":
             return handleScreenshot(params: params, id: request.id)
         case "process.watch":
@@ -314,7 +319,7 @@ final class Router {
                 let clickResult = safariTransport.clickElement(match: matchStr)
                 return transportResultToResponse(clickResult, id: id)
             } else if action == "fill" {
-                let fillResult = safariTransport.fillElement(match: matchStr, value: value)
+                let fillResult = safariTransport.fillElement(match: matchStr, value: value ?? "")
                 return transportResultToResponse(fillResult, id: id)
             } else if action == "read" {
                 // For read, get a Safari page snapshot and return basic info
@@ -580,45 +585,92 @@ final class Router {
         return JSONRPCResponse(result: AnyCodable(encoded.map { $0 }), id: id)
     }
 
-    // MARK: - web.* handlers (Safari Transport)
+    // MARK: - web.* handlers (routed through BrowserRouter)
 
-    private func handleWebTabs(id: AnyCodable?) -> JSONRPCResponse {
-        let result = safariTransport.listTabs()
+    /// Resolve the browser transport from params, falling back to auto-detect
+    private func resolveBrowser(params: [String: AnyCodable]) -> BrowserTransport? {
+        let explicit = params["browser"]?.value as? String
+        return browserRouter.activeBrowser(explicit: explicit)
+    }
+
+    private func handleWebTabs(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        guard let browser = resolveBrowser(params: params) else {
+            return JSONRPCResponse(error: JSONRPCError(code: -30, message: "No browser available. Is Safari or Chrome running?"), id: id)
+        }
+        let result = browser.listTabs()
         return transportResultToResponse(result, id: id)
     }
 
     private func handleWebNavigate(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
-        let url = params["url"]?.value as? String
-        let result = safariTransport.navigate(url: url)
+        guard let browser = resolveBrowser(params: params) else {
+            return JSONRPCResponse(error: JSONRPCError(code: -30, message: "No browser available"), id: id)
+        }
+        guard let url = params["url"]?.value as? String else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "web.navigate requires 'url' parameter"), id: id)
+        }
+        let result = browser.navigate(url: url)
         return transportResultToResponse(result, id: id)
     }
 
-    private func handleWebSnapshot(id: AnyCodable?) -> JSONRPCResponse {
-        let result = safariTransport.pageSnapshot()
+    private func handleWebSnapshot(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        guard let browser = resolveBrowser(params: params) else {
+            return JSONRPCResponse(error: JSONRPCError(code: -30, message: "No browser available"), id: id)
+        }
+        let result = browser.pageSnapshot()
         return transportResultToResponse(result, id: id)
     }
 
     private func handleWebClick(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
-        let match = params["match"]?.value as? String
-        let result = safariTransport.clickElement(match: match)
+        guard let browser = resolveBrowser(params: params) else {
+            return JSONRPCResponse(error: JSONRPCError(code: -30, message: "No browser available"), id: id)
+        }
+        guard let match = params["match"]?.value as? String else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "web.click requires 'match' parameter"), id: id)
+        }
+        let result = browser.clickElement(match: match)
         return webJSResultToResponse(result, id: id)
     }
 
     private func handleWebFill(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
-        let match = params["match"]?.value as? String
-        let value = params["value"]?.value as? String
-        let result = safariTransport.fillElement(match: match, value: value)
+        guard let browser = resolveBrowser(params: params) else {
+            return JSONRPCResponse(error: JSONRPCError(code: -30, message: "No browser available"), id: id)
+        }
+        guard let match = params["match"]?.value as? String else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "web.fill requires 'match' parameter"), id: id)
+        }
+        let value = params["value"]?.value as? String ?? ""
+        let result = browser.fillElement(match: match, value: value)
         return webJSResultToResponse(result, id: id)
     }
 
-    private func handleWebExtract(id: AnyCodable?) -> JSONRPCResponse {
-        let result = safariTransport.extractContent()
+    private func handleWebExtract(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        guard let browser = resolveBrowser(params: params) else {
+            return JSONRPCResponse(error: JSONRPCError(code: -30, message: "No browser available"), id: id)
+        }
+        let result = browser.extractContent()
         return transportResultToResponse(result, id: id)
     }
 
     private func handleWebSwitchTab(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
-        let match = params["match"]?.value as? String
-        let result = safariTransport.switchTab(match: match)
+        guard let browser = resolveBrowser(params: params) else {
+            return JSONRPCResponse(error: JSONRPCError(code: -30, message: "No browser available"), id: id)
+        }
+        guard let match = params["match"]?.value as? String else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "web.switchTab requires 'match' parameter"), id: id)
+        }
+        let result = browser.switchTab(match: match)
+        return transportResultToResponse(result, id: id)
+    }
+
+    private func handleWebEval(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        guard let browser = resolveBrowser(params: params) else {
+            return JSONRPCResponse(error: JSONRPCError(code: -30, message: "No browser available"), id: id)
+        }
+        guard let expression = params["expression"]?.value as? String else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "web.eval requires 'expression' parameter"), id: id)
+        }
+        let timeout = (params["timeout"]?.value as? Int) ?? 10
+        let result = browser.evaluateJS(expression: expression, timeout: timeout)
         return transportResultToResponse(result, id: id)
     }
 

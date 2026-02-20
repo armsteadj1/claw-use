@@ -1257,13 +1257,16 @@ struct Watch: ParsableCommand {
 
 struct Web: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Safari web automation commands",
-        subcommands: [WebTabs.self, WebNavigate.self, WebSnapshot.self, WebClick.self, WebFill.self, WebExtract.self, WebTab.self]
+        abstract: "Browser web automation commands (Safari, Chrome, auto-detect)",
+        subcommands: [WebTabs.self, WebNavigate.self, WebSnapshot.self, WebClick.self, WebFill.self, WebExtract.self, WebTab.self, WebEval.self]
     )
 }
 
 struct WebTabs: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "tabs", abstract: "List all open Safari tabs")
+    static let configuration = CommandConfiguration(commandName: "tabs", abstract: "List all open browser tabs")
+
+    @Option(name: .long, help: "Browser to use (safari, chrome). Auto-detects if omitted.")
+    var browser: String?
 
     @Option(name: .long, help: "Output format (compact or json)")
     var format: String = "compact"
@@ -1272,7 +1275,9 @@ struct WebTabs: ParsableCommand {
     var pretty: Bool = false
 
     func run() throws {
-        let response = try callDaemon(method: "web.tabs")
+        var params: [String: AnyCodable] = [:]
+        if let browser = browser { params["browser"] = AnyCodable(browser) }
+        let response = try callDaemon(method: "web.tabs", params: params.isEmpty ? nil : params)
         try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
             CompactFormatter.formatWebTabs(data: dict)
         }
@@ -1280,10 +1285,13 @@ struct WebTabs: ParsableCommand {
 }
 
 struct WebNavigate: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "navigate", abstract: "Navigate Safari to a URL")
+    static let configuration = CommandConfiguration(commandName: "navigate", abstract: "Navigate browser to a URL")
 
     @Argument(help: "URL to navigate to")
     var url: String
+
+    @Option(name: .long, help: "Browser to use (safari, chrome). Auto-detects if omitted.")
+    var browser: String?
 
     @Option(name: .long, help: "Output format (compact or json)")
     var format: String = "compact"
@@ -1292,7 +1300,8 @@ struct WebNavigate: ParsableCommand {
     var pretty: Bool = false
 
     func run() throws {
-        let params: [String: AnyCodable] = ["url": AnyCodable(url)]
+        var params: [String: AnyCodable] = ["url": AnyCodable(url)]
+        if let browser = browser { params["browser"] = AnyCodable(browser) }
         let response = try callDaemon(method: "web.navigate", params: params)
         try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
             CompactFormatter.formatWebNavigate(data: dict)
@@ -1301,7 +1310,10 @@ struct WebNavigate: ParsableCommand {
 }
 
 struct WebSnapshot: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "snapshot", abstract: "Semantic snapshot of the current Safari page")
+    static let configuration = CommandConfiguration(commandName: "snapshot", abstract: "Semantic snapshot of the current browser page")
+
+    @Option(name: .long, help: "Browser to use (safari, chrome). Auto-detects if omitted.")
+    var browser: String?
 
     @Option(name: .long, help: "Output format (compact or json)")
     var format: String = "compact"
@@ -1316,7 +1328,9 @@ struct WebSnapshot: ParsableCommand {
     var pretty: Bool = false
 
     func run() throws {
-        let response = try callDaemon(method: "web.snapshot")
+        var params: [String: AnyCodable] = [:]
+        if let browser = browser { params["browser"] = AnyCodable(browser) }
+        let response = try callDaemon(method: "web.snapshot", params: params.isEmpty ? nil : params)
         if let error = response.error {
             fputs("Error: \(error.message)\n", stderr)
             throw ExitCode.failure
@@ -1347,6 +1361,9 @@ struct WebClick: ParsableCommand {
     @Argument(help: "Text to fuzzy match (button text, link text, aria-label)")
     var match: String
 
+    @Option(name: .long, help: "Browser to use (safari, chrome). Auto-detects if omitted.")
+    var browser: String?
+
     @Option(name: .long, help: "Output format (compact or json)")
     var format: String = "compact"
 
@@ -1354,7 +1371,8 @@ struct WebClick: ParsableCommand {
     var pretty: Bool = false
 
     func run() throws {
-        let params: [String: AnyCodable] = ["match": AnyCodable(match)]
+        var params: [String: AnyCodable] = ["match": AnyCodable(match)]
+        if let browser = browser { params["browser"] = AnyCodable(browser) }
         let response = try callDaemon(method: "web.click", params: params)
         try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
             CompactFormatter.formatWebClick(data: dict)
@@ -1371,6 +1389,9 @@ struct WebFill: ParsableCommand {
     @Option(name: .long, help: "Value to fill")
     var value: String
 
+    @Option(name: .long, help: "Browser to use (safari, chrome). Auto-detects if omitted.")
+    var browser: String?
+
     @Option(name: .long, help: "Output format (compact or json)")
     var format: String = "compact"
 
@@ -1378,10 +1399,11 @@ struct WebFill: ParsableCommand {
     var pretty: Bool = false
 
     func run() throws {
-        let params: [String: AnyCodable] = [
+        var params: [String: AnyCodable] = [
             "match": AnyCodable(match),
             "value": AnyCodable(value),
         ]
+        if let browser = browser { params["browser"] = AnyCodable(browser) }
         let response = try callDaemon(method: "web.fill", params: params)
         try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
             CompactFormatter.formatWebFill(data: dict)
@@ -1391,6 +1413,9 @@ struct WebFill: ParsableCommand {
 
 struct WebExtract: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "extract", abstract: "Extract page content as markdown")
+
+    @Option(name: .long, help: "Browser to use (safari, chrome). Auto-detects if omitted.")
+    var browser: String?
 
     @Option(name: .long, help: "Output format (compact or json)")
     var format: String = "compact"
@@ -1405,7 +1430,9 @@ struct WebExtract: ParsableCommand {
     var pretty: Bool = false
 
     func run() throws {
-        let response = try callDaemon(method: "web.extract")
+        var params: [String: AnyCodable] = [:]
+        if let browser = browser { params["browser"] = AnyCodable(browser) }
+        let response = try callDaemon(method: "web.extract", params: params.isEmpty ? nil : params)
         if let error = response.error {
             fputs("Error: \(error.message)\n", stderr)
             throw ExitCode.failure
@@ -1431,10 +1458,13 @@ struct WebExtract: ParsableCommand {
 }
 
 struct WebTab: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "tab", abstract: "Switch to a Safari tab by fuzzy match")
+    static let configuration = CommandConfiguration(commandName: "tab", abstract: "Switch to a browser tab by fuzzy match")
 
     @Argument(help: "Tab title or URL to match")
     var match: String
+
+    @Option(name: .long, help: "Browser to use (safari, chrome). Auto-detects if omitted.")
+    var browser: String?
 
     @Option(name: .long, help: "Output format (compact or json)")
     var format: String = "compact"
@@ -1443,7 +1473,8 @@ struct WebTab: ParsableCommand {
     var pretty: Bool = false
 
     func run() throws {
-        let params: [String: AnyCodable] = ["match": AnyCodable(match)]
+        var params: [String: AnyCodable] = ["match": AnyCodable(match)]
+        if let browser = browser { params["browser"] = AnyCodable(browser) }
         let response = try callDaemon(method: "web.switchTab", params: params)
         if format == "compact", let error = response.error {
             print("❌ \(error.message)")
@@ -1451,6 +1482,37 @@ struct WebTab: ParsableCommand {
         }
         try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
             CompactFormatter.formatWebSwitchTab(data: dict)
+        }
+    }
+}
+
+struct WebEval: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "eval", abstract: "Execute JavaScript in the browser and return the result")
+
+    @Argument(help: "JavaScript expression to evaluate")
+    var expression: String
+
+    @Option(name: .long, help: "Browser to use (safari, chrome). Auto-detects if omitted.")
+    var browser: String?
+
+    @Option(name: .long, help: "Timeout in seconds (default: 10)")
+    var timeout: Int = 10
+
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "json"
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        var params: [String: AnyCodable] = [
+            "expression": AnyCodable(expression),
+            "timeout": AnyCodable(timeout),
+        ]
+        if let browser = browser { params["browser"] = AnyCodable(browser) }
+        let response = try callDaemon(method: "web.eval", params: params)
+        try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
+            CompactFormatter.formatWebEval(data: dict)
         }
     }
 }

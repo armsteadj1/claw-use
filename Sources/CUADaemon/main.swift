@@ -109,6 +109,12 @@ transportRouter.register(transport: appleScriptTransport)
 transportRouter.register(transport: safariTransport)
 transportRouter.configureDefaults()
 
+// Initialize browser router (pluggable browser transport layer — Issue #67)
+let browserRouter = BrowserRouter()
+let chromeBrowserTransport = ChromeBrowserTransport()
+browserRouter.register(safariTransport)   // Safari first (default)
+browserRouter.register(chromeBrowserTransport) // Chrome/Chromium second
+
 // Initialize process group manager (tracked process state machine)
 let processGroup = ProcessGroupManager()
 processGroup.cleanupDead()
@@ -117,6 +123,7 @@ log("ProcessGroup: \(processGroup.count) processes loaded, dead PIDs cleaned")
 
 let router = Router(screenState: screenState, cdpPool: cdpPool, transportRouter: transportRouter,
                     snapshotCache: snapshotCache, eventBus: eventBus, safariTransport: safariTransport,
+                    browserRouter: browserRouter,
                     processGroup: processGroup)
 let server = Server(router: router)
 
@@ -137,6 +144,7 @@ do {
 
 log("cuad ready (pid \(ProcessInfo.processInfo.processIdentifier))")
 log("  transports: ax, cdp, applescript, safari")
+log("  browser transports: safari, chrome (auto-detect enabled)")
 log("  event bus: monitoring app lifecycle + AX notifications")
 log("  cache: TTL ax=\(snapshotCache.axTTL)s cdp=\(snapshotCache.cdpTTL)s applescript=\(snapshotCache.applescriptTTL)s")
 

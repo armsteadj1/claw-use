@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Safari Transport — AppleScript + `do JavaScript` hybrid for web browsing
@@ -7,7 +8,17 @@ import Foundation
 /// - Page content via `do JavaScript` (execute JS, get title/URL/HTML/text)
 /// - Navigation: open URL, go back/forward, reload
 /// - Works even when screen is locked (all via osascript)
-public final class SafariTransport: Transport {
+public final class SafariTransport: Transport, BrowserTransport {
+    public var browserName: String { "safari" }
+
+    public func isAvailable() -> Bool {
+        // Check if Safari is running
+        let workspace = NSWorkspace.shared
+        return workspace.runningApplications.contains {
+            $0.bundleIdentifier == "com.apple.Safari"
+        }
+    }
+
     public let name = "safari"
     public let stats = TransportStats()
 
@@ -56,13 +67,13 @@ public final class SafariTransport: Transport {
         case "safari_tabs":
             result = listTabs()
         case "safari_switch_tab":
-            result = switchTab(match: action.value)
+            result = switchTab(match: action.value ?? "")
         case "safari_open_tab":
             result = openTab(url: action.value)
         case "safari_close_tab":
             result = closeTab()
         case "safari_navigate":
-            result = navigate(url: action.value)
+            result = navigate(url: action.value ?? "")
         case "safari_back":
             result = goBack()
         case "safari_forward":
@@ -82,9 +93,9 @@ public final class SafariTransport: Transport {
         case "safari_snapshot":
             result = pageSnapshot()
         case "safari_click":
-            result = clickElement(match: action.value)
+            result = clickElement(match: action.value ?? "")
         case "safari_fill":
-            result = fillElement(match: action.value, value: action.expr)
+            result = fillElement(match: action.value ?? "", value: action.expr ?? "")
         case "safari_extract":
             result = extractContent()
         case "safari_elements":
@@ -157,8 +168,8 @@ public final class SafariTransport: Transport {
     }
 
     /// Switch to a tab by fuzzy title/URL match
-    public func switchTab(match: String?) -> TransportResult {
-        guard let match = match, !match.isEmpty else {
+    public func switchTab(match: String) -> TransportResult {
+        guard !match.isEmpty else {
             return TransportResult(success: false, data: nil, error: "switchTab requires --value with tab title or URL", transportUsed: name)
         }
 
@@ -251,8 +262,8 @@ public final class SafariTransport: Transport {
     // MARK: - Navigation
 
     /// Navigate current tab to a URL (or switch to existing tab)
-    public func navigate(url: String?) -> TransportResult {
-        guard let url = url, !url.isEmpty else {
+    public func navigate(url: String) -> TransportResult {
+        guard !url.isEmpty else {
             return TransportResult(success: false, data: nil, error: "navigate requires URL", transportUsed: name)
         }
 
@@ -313,18 +324,36 @@ public final class SafariTransport: Transport {
 
     // MARK: - Page Content via do JavaScript
 
-    /// Execute arbitrary JavaScript in the current tab
+    /// Execute arbitrary JavaScript in the current tab.
+    ///
+    /// Wraps expression for proper JSON return value serialization,
+    /// async/await support, and error forwarding with stack traces.
     public func executeJS(expr: String?, timeout: Int = 5) -> TransportResult {
         guard let expr = expr, !expr.isEmpty else {
             return TransportResult(success: false, data: nil, error: "JS execution requires expression", transportUsed: name)
         }
+
+        // Wrap in async IIFE for promise support + JSON serialization + error forwarding
+        let wrappedExpr = """
+        (async () => {
+            try {
+                const __cua_result = await (async () => { return (\(expr)); })();
+                if (__cua_result === undefined) return 'undefined';
+                if (__cua_result === null) return 'null';
+                if (typeof __cua_result === 'string') return __cua_result;
+                try { return JSON.stringify(__cua_result); } catch(e) { return String(__cua_result); }
+            } catch (__cua_err) {
+                return 'CUA_JS_ERROR:' + (__cua_err.message || String(__cua_err)) + (__cua_err.stack ? '\\nStack: ' + __cua_err.stack : '');
+            }
+        })()
+        """
 
         // Write JS to temp file to avoid AppleScript string escaping hell
         let pid = ProcessInfo.processInfo.processIdentifier
         let tmpJSFile = "/tmp/cua-js-\(pid).js"
         let tmpScriptFile = "/tmp/cua-scpt-\(pid).applescript"
         do {
-            try expr.write(toFile: tmpJSFile, atomically: true, encoding: .utf8)
+            try wrappedExpr.write(toFile: tmpJSFile, atomically: true, encoding: .utf8)
             let scpt = """
             set jsCode to read (POSIX file "\(tmpJSFile)") as «class utf8»
             tell application "Safari"
@@ -343,13 +372,25 @@ public final class SafariTransport: Transport {
         } catch {
             return TransportResult(success: false, data: nil, error: "Failed to write temp files: \(error)", transportUsed: name)
         }
-        defer {
-            // skip cleanup
-            // skip cleanup
-        }
 
         let result = runOsascriptFile(path: tmpScriptFile, timeout: timeout)
+
+        // Check for JS errors in result and forward them properly
+        if result.success, let data = result.data,
+           let raw = data["result"]?.value as? String,
+           raw.hasPrefix("CUA_JS_ERROR:") {
+            let errorMsg = String(raw.dropFirst("CUA_JS_ERROR:".count))
+            return TransportResult(success: false, data: nil, error: errorMsg, transportUsed: name)
+        }
+
         return result
+    }
+
+    // MARK: - BrowserTransport conformance
+
+    /// BrowserTransport: evaluateJS delegates to executeJS
+    public func evaluateJS(expression: String, timeout: Int) -> TransportResult {
+        return executeJS(expr: expression, timeout: timeout)
     }
 
     /// Get current page title
@@ -416,8 +457,8 @@ public final class SafariTransport: Transport {
     }
 
     /// Click element by fuzzy match
-    public func clickElement(match: String?) -> TransportResult {
-        guard let match = match, !match.isEmpty else {
+    public func clickElement(match: String) -> TransportResult {
+        guard !match.isEmpty else {
             return TransportResult(success: false, data: nil, error: "click requires --value with match text", transportUsed: name)
         }
 
@@ -429,11 +470,11 @@ public final class SafariTransport: Transport {
     }
 
     /// Fill element by fuzzy match
-    public func fillElement(match: String?, value: String?) -> TransportResult {
-        guard let match = match, !match.isEmpty else {
+    public func fillElement(match: String, value: String) -> TransportResult {
+        guard !match.isEmpty else {
             return TransportResult(success: false, data: nil, error: "fill requires --value with match text", transportUsed: name)
         }
-        guard let value = value, !value.isEmpty else {
+        guard !value.isEmpty else {
             return TransportResult(success: false, data: nil, error: "fill requires value", transportUsed: name)
         }
 

@@ -415,6 +415,19 @@ public enum CompactFormatter {
         return "✅ filled \"\(matched)\" = \"\(filledValue)\" (score: \(score))"
     }
 
+    // MARK: - Web Eval
+
+    /// Format web eval result: `=> "result value"` or error
+    public static func formatWebEval(data: [String: AnyCodable]) -> String {
+        let success = data["success"]?.value as? Bool ?? false
+        if !success {
+            let error = data["error"]?.value as? String ?? "eval failed"
+            return "Error: \(error)"
+        }
+        let result = data["result"]?.value as? String ?? "undefined"
+        return "=> \(result)"
+    }
+
     // MARK: - Helpers
 
     private static func extractHost(from urlString: String) -> String {
