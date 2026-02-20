@@ -69,6 +69,7 @@ final class Server {
     }
 
     private func handleConnection(_ connection: NWConnection) {
+        router.incrementConnections()
         connection.start(queue: queue)
         receiveMessage(on: connection)
     }

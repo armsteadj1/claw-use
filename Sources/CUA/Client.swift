@@ -8,24 +8,27 @@ struct DaemonClient {
     static let socketPath = cuaDir + "/sock"
     static let pidFilePath = cuaDir + "/pid"
 
-    /// Send a JSON-RPC request to the daemon, return the response
-    static func call(method: String, params: [String: AnyCodable]? = nil) throws -> JSONRPCResponse {
-        // Ensure daemon is running
-        if !isDaemonRunning() {
-            try startDaemon()
-            // Wait for daemon to be ready
-            var ready = false
-            for _ in 0..<20 {
-                Thread.sleep(forTimeInterval: 0.25)
-                if isDaemonRunning() {
-                    ready = true
-                    break
-                }
-            }
-            if !ready {
-                throw ClientError.daemonStartFailed
+    /// Ensure the daemon is running. If not, start it and wait for readiness.
+    /// Shared helper — every CLI command calls this before connecting.
+    static func ensureDaemon() throws {
+        if isDaemonRunning() { return }
+        try startDaemon()
+        var ready = false
+        for _ in 0..<20 {
+            Thread.sleep(forTimeInterval: 0.25)
+            if isDaemonRunning() {
+                ready = true
+                break
             }
         }
+        if !ready {
+            throw ClientError.daemonStartFailed
+        }
+    }
+
+    /// Send a JSON-RPC request to the daemon, return the response
+    static func call(method: String, params: [String: AnyCodable]? = nil) throws -> JSONRPCResponse {
+        try ensureDaemon()
 
         let request = JSONRPCRequest(method: method, params: params)
         let encoder = JSONEncoder()
@@ -56,9 +59,8 @@ struct DaemonClient {
         return kill(pid, 0) == 0 ? pid : nil
     }
 
-    /// Auto-start the daemon via fork+exec
-    static func startDaemon() throws {
-        // Find cuad binary — check same dir as CLI, then PATH
+    /// Resolve the path to the cuad binary — check same dir as CLI, then PATH, then common locations.
+    static func resolveDaemonBinary() throws -> String {
         let fm = FileManager.default
         var daemonPath = ""
 
@@ -96,10 +98,15 @@ struct DaemonClient {
             }
         }
 
-        // Check if the daemon binary exists
-        guard FileManager.default.isExecutableFile(atPath: daemonPath) else {
+        guard fm.isExecutableFile(atPath: daemonPath) else {
             throw ClientError.daemonBinaryNotFound(daemonPath)
         }
+        return daemonPath
+    }
+
+    /// Auto-start the daemon via fork+exec
+    static func startDaemon() throws {
+        let daemonPath = try resolveDaemonBinary()
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: daemonPath)
@@ -108,7 +115,6 @@ struct DaemonClient {
         // Detach the daemon from our process group
         process.standardOutput = FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
-        // Keep stderr for debugging
         process.standardError = FileHandle.nullDevice
 
         try process.run()
@@ -132,21 +138,7 @@ struct DaemonClient {
     /// Send a subscribe request and stream events as JSONL to stdout.
     /// Blocks until the connection is closed or SIGINT.
     static func stream(params: [String: AnyCodable]? = nil) throws {
-        // Ensure daemon is running
-        if !isDaemonRunning() {
-            try startDaemon()
-            var ready = false
-            for _ in 0..<20 {
-                Thread.sleep(forTimeInterval: 0.25)
-                if isDaemonRunning() {
-                    ready = true
-                    break
-                }
-            }
-            if !ready {
-                throw ClientError.daemonStartFailed
-            }
-        }
+        try ensureDaemon()
 
         let request = JSONRPCRequest(method: "subscribe", params: params)
         let encoder = JSONEncoder()

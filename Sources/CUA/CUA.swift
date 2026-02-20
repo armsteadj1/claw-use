@@ -84,7 +84,7 @@ private func printFormattedResponse(
 struct Daemon: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Manage the cuad daemon",
-        subcommands: [DaemonStart.self, DaemonStop.self, DaemonStatus.self]
+        subcommands: [DaemonStart.self, DaemonStop.self, DaemonStatus.self, DaemonHealth.self, DaemonInstall.self, DaemonUninstall.self]
     )
 }
 
@@ -134,6 +134,131 @@ struct DaemonStatus: ParsableCommand {
         } else {
             print("{\"status\":\"not_running\"}")
         }
+    }
+}
+
+struct DaemonHealth: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "health", abstract: "Health check: uptime, last snapshot, connections, restarts")
+
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        let response = try callDaemon(method: "health")
+        try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
+            var lines: [String] = ["Daemon Health"]
+            lines.append("──────────────────────────────────────────")
+            let status = dict["status"]?.value as? String ?? "unknown"
+            let pid = dict["pid"]?.value as? Int ?? 0
+            let uptime = dict["uptime_s"]?.value as? Int ?? 0
+            let connections = dict["connection_count"]?.value as? Int ?? 0
+            let restarts = dict["restart_count"]?.value as? Int ?? 0
+            let lastSnapshot = dict["last_snapshot_at"]?.value as? String ?? "(none)"
+
+            let hours = uptime / 3600
+            let mins = (uptime % 3600) / 60
+            let secs = uptime % 60
+            let uptimeStr = hours > 0 ? "\(hours)h \(mins)m \(secs)s" : mins > 0 ? "\(mins)m \(secs)s" : "\(secs)s"
+
+            lines.append("  status:         \(status)")
+            lines.append("  pid:            \(pid)")
+            lines.append("  uptime:         \(uptimeStr)")
+            lines.append("  last snapshot:  \(lastSnapshot)")
+            lines.append("  connections:    \(connections)")
+            lines.append("  restarts:       \(restarts)")
+            return lines.joined(separator: "\n")
+        }
+    }
+}
+
+struct DaemonInstall: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "install", abstract: "Install launchd plist for persistent daemon (KeepAlive)")
+
+    func run() throws {
+        let daemonPath = try DaemonClient.resolveDaemonBinary()
+
+        let plistPath = NSHomeDirectory() + "/Library/LaunchAgents/com.clawuse.cuad.plist"
+        let logPath = NSHomeDirectory() + "/.cua/cuad.log"
+
+        let plistContent = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>com.clawuse.cuad</string>
+            <key>ProgramArguments</key>
+            <array>
+                <string>\(daemonPath)</string>
+            </array>
+            <key>KeepAlive</key>
+            <true/>
+            <key>RunAtLoad</key>
+            <true/>
+            <key>StandardErrorPath</key>
+            <string>\(logPath)</string>
+        </dict>
+        </plist>
+        """
+
+        // Ensure LaunchAgents directory exists
+        let launchAgentsDir = NSHomeDirectory() + "/Library/LaunchAgents"
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: launchAgentsDir) {
+            try fm.createDirectory(atPath: launchAgentsDir, withIntermediateDirectories: true)
+        }
+
+        // Stop existing daemon if running via CLI (so launchd takes over)
+        if DaemonClient.isDaemonRunning() {
+            _ = DaemonClient.stopDaemon()
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+
+        try plistContent.write(toFile: plistPath, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["load", plistPath]
+        let errPipe = Foundation.Pipe()
+        process.standardError = errPipe
+        try process.run()
+        process.waitUntilExit()
+
+        if process.terminationStatus == 0 {
+            print("{\"status\":\"installed\",\"plist\":\"\(plistPath)\",\"daemon\":\"\(daemonPath)\"}")
+        } else {
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let errStr = String(data: errData, encoding: .utf8) ?? ""
+            fputs("Error: launchctl load failed: \(errStr)\n", stderr)
+            throw ExitCode.failure
+        }
+    }
+}
+
+struct DaemonUninstall: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "uninstall", abstract: "Uninstall launchd plist and stop persistent daemon")
+
+    func run() throws {
+        let plistPath = NSHomeDirectory() + "/Library/LaunchAgents/com.clawuse.cuad.plist"
+        let fm = FileManager.default
+
+        guard fm.fileExists(atPath: plistPath) else {
+            print("{\"status\":\"not_installed\"}")
+            return
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["unload", plistPath]
+        try process.run()
+        process.waitUntilExit()
+
+        try? fm.removeItem(atPath: plistPath)
+
+        print("{\"status\":\"uninstalled\"}")
     }
 }
 

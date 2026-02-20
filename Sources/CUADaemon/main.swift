@@ -40,9 +40,19 @@ func setupSignalHandlers(server: Server, screenState: ScreenState, cdpPool: CDPC
     signal(SIGINT, signalCallback)
 }
 
+// MARK: - Restart count (persists across daemon restarts for launchd health)
+
+func incrementRestartCount() {
+    let path = cuaDir + "/restart_count"
+    let current = (try? String(contentsOfFile: path, encoding: .utf8))
+        .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
+    try? "\(current + 1)".write(toFile: path, atomically: true, encoding: .utf8)
+}
+
 // MARK: - Main
 
 log("cuad starting...")
+incrementRestartCount()
 
 // Initialize wake client (connects to OpenClaw gateway)
 let wakeClient = WakeClient.fromConfig()

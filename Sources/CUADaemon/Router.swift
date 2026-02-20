@@ -15,6 +15,27 @@ final class Router {
     let processMonitor: ProcessMonitor
     let processGroup: ProcessGroupManager
 
+    // Health tracking
+    private var _lastSnapshotTime: Date?
+    private var _totalConnections: Int = 0
+    private let healthLock = NSLock()
+
+    var lastSnapshotTime: Date? {
+        get { healthLock.lock(); defer { healthLock.unlock() }; return _lastSnapshotTime }
+        set { healthLock.lock(); _lastSnapshotTime = newValue; healthLock.unlock() }
+    }
+
+    var totalConnections: Int {
+        get { healthLock.lock(); defer { healthLock.unlock() }; return _totalConnections }
+        set { healthLock.lock(); _totalConnections = newValue; healthLock.unlock() }
+    }
+
+    func incrementConnections() {
+        healthLock.lock()
+        _totalConnections += 1
+        healthLock.unlock()
+    }
+
     init(screenState: ScreenState, cdpPool: CDPConnectionPool, transportRouter: TransportRouter,
          snapshotCache: SnapshotCache, eventBus: EventBus, safariTransport: SafariTransport,
          processGroup: ProcessGroupManager) {
@@ -48,6 +69,8 @@ final class Router {
             return handlePipe(params: params, id: request.id)
         case "status":
             return handleStatus(id: request.id)
+        case "health":
+            return handleHealth(id: request.id)
         case "subscribe":
             return handleSubscribe(params: params, id: request.id)
         case "events":
@@ -185,6 +208,10 @@ final class Router {
            let snapshotData = try? JSONOutput.encode(AnyCodable(data)),
            let snapshot = try? JSONDecoder().decode(AppSnapshot.self, from: snapshotData) {
             let _ = snapshotCache.put(app: resolvedName, snapshot: snapshot, transport: result.transportUsed)
+        }
+
+        if result.success {
+            lastSnapshotTime = Date()
         }
 
         return transportResultToResponse(result, id: id)
@@ -485,6 +512,28 @@ final class Router {
             ] as [String: AnyCodable]),
         ]
 
+        return JSONRPCResponse(result: AnyCodable(result), id: id)
+    }
+
+    // MARK: - health (lightweight health check)
+
+    private func handleHealth(id: AnyCodable?) -> JSONRPCResponse {
+        let uptime = Int(Date().timeIntervalSince(startTime))
+        let lastSnapshot: String? = lastSnapshotTime.map { ISO8601DateFormatter().string(from: $0) }
+
+        // Read restart count from persistent file
+        let restartPath = NSHomeDirectory() + "/.cua/restart_count"
+        let restartCount = (try? String(contentsOfFile: restartPath, encoding: .utf8))
+            .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
+
+        let result: [String: AnyCodable] = [
+            "status": AnyCodable("healthy"),
+            "pid": AnyCodable(ProcessInfo.processInfo.processIdentifier),
+            "uptime_s": AnyCodable(uptime),
+            "last_snapshot_at": AnyCodable(lastSnapshot),
+            "connection_count": AnyCodable(totalConnections),
+            "restart_count": AnyCodable(restartCount),
+        ]
         return JSONRPCResponse(result: AnyCodable(result), id: id)
     }
 
