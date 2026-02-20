@@ -1563,6 +1563,195 @@ func makeTestElement(ref: String, role: String, label: String) -> Element {
     #expect(result.contains("error: No window found"))
 }
 
+// MARK: - Issue #72 Tests
+
+// #1: AXRow label bubbling
+
+@Test func axRowBubbleUpLabelFromStaticText() {
+    let row = RawAXNode(
+        role: "AXRow", roleDescription: nil, title: nil,
+        value: nil, axDescription: nil, identifier: nil, placeholder: nil,
+        position: nil, size: nil, enabled: true, focused: false, selected: false,
+        url: nil, actions: [], children: [
+            RawAXNode(
+                role: "AXStaticText", roleDescription: nil, title: nil,
+                value: AnyCodable("Meeting 10:00"), axDescription: nil, identifier: nil, placeholder: nil,
+                position: nil, size: nil, enabled: nil, focused: nil, selected: nil,
+                url: nil, actions: [], children: [], childCount: 0,
+                domId: nil, domClasses: nil
+            ),
+        ], childCount: 1,
+        domId: nil, domClasses: nil
+    )
+
+    let label = Grouper.bubbleUpLabel(from: row)
+    #expect(label == "Meeting 10:00")
+}
+
+@Test func axRowBubbleUpCompositeLabelFromMultipleChildren() {
+    let row = RawAXNode(
+        role: "AXRow", roleDescription: nil, title: nil,
+        value: nil, axDescription: nil, identifier: nil, placeholder: nil,
+        position: nil, size: nil, enabled: true, focused: false, selected: false,
+        url: nil, actions: [], children: [
+            RawAXNode(
+                role: "AXStaticText", roleDescription: nil, title: nil,
+                value: AnyCodable("Meeting"), axDescription: nil, identifier: nil, placeholder: nil,
+                position: nil, size: nil, enabled: nil, focused: nil, selected: nil,
+                url: nil, actions: [], children: [], childCount: 0,
+                domId: nil, domClasses: nil
+            ),
+            RawAXNode(
+                role: "AXStaticText", roleDescription: nil, title: nil,
+                value: AnyCodable("10:00 AM"), axDescription: nil, identifier: nil, placeholder: nil,
+                position: nil, size: nil, enabled: nil, focused: nil, selected: nil,
+                url: nil, actions: [], children: [], childCount: 0,
+                domId: nil, domClasses: nil
+            ),
+        ], childCount: 2,
+        domId: nil, domClasses: nil
+    )
+
+    let label = Grouper.bubbleUpCompositeLabel(from: row)
+    #expect(label == "Meeting | 10:00 AM")
+}
+
+@Test func axRowBubbleUpReturnsNilForEmptyRow() {
+    let row = RawAXNode(
+        role: "AXRow", roleDescription: nil, title: nil,
+        value: nil, axDescription: nil, identifier: nil, placeholder: nil,
+        position: nil, size: nil, enabled: true, focused: false, selected: false,
+        url: nil, actions: [], children: [], childCount: 0,
+        domId: nil, domClasses: nil
+    )
+
+    let label = Grouper.bubbleUpCompositeLabel(from: row)
+    #expect(label == nil)
+}
+
+@Test func axRowGetsRefAssigned() {
+    let assigner = RefAssigner()
+    let row = RawAXNode(
+        role: "AXRow", roleDescription: nil, title: nil,
+        value: nil, axDescription: nil, identifier: nil, placeholder: nil,
+        position: nil, size: nil, enabled: true, focused: false, selected: false,
+        url: nil, actions: [], children: [], childCount: 0,
+        domId: nil, domClasses: nil
+    )
+    #expect(assigner.shouldAssignRef(row) == true)
+}
+
+// #1 + #4: Row label consistency in buildElements
+
+@Test func buildElementsAssignsLabelToRow() {
+    let refAssigner = RefAssigner()
+    let refMap = RefMap()
+    let row = RawAXNode(
+        role: "AXRow", roleDescription: nil, title: nil,
+        value: nil, axDescription: nil, identifier: nil, placeholder: nil,
+        position: nil, size: nil, enabled: true, focused: false, selected: false,
+        url: nil, actions: [], children: [
+            RawAXNode(
+                role: "AXStaticText", roleDescription: nil, title: nil,
+                value: AnyCodable("Row Label"), axDescription: nil, identifier: nil, placeholder: nil,
+                position: nil, size: nil, enabled: nil, focused: nil, selected: nil,
+                url: nil, actions: [], children: [], childCount: 0,
+                domId: nil, domClasses: nil
+            ),
+        ], childCount: 1,
+        domId: nil, domClasses: nil
+    )
+
+    let elements = Grouper.buildElements(from: [row], refAssigner: refAssigner, refMap: refMap)
+    #expect(elements.count >= 1)
+    let rowElement = elements.first { $0.role == "row" }
+    #expect(rowElement != nil)
+    #expect(rowElement?.label == "Row Label")
+    #expect(!rowElement!.ref.isEmpty)
+    #expect(rowElement?.actions.contains("select") == true)
+}
+
+// #8: ElementIdentity with position fallback
+
+@Test func elementIdentityWithPositionKey() {
+    let id1 = ElementIdentity(role: "row", title: nil, identifier: nil, positionKey: "100,200")
+    let id2 = ElementIdentity(role: "row", title: nil, identifier: nil, positionKey: "100,200")
+    let id3 = ElementIdentity(role: "row", title: nil, identifier: nil, positionKey: "100,300")
+
+    #expect(id1 == id2)
+    #expect(id1 != id3)
+
+    var set = Set<ElementIdentity>()
+    set.insert(id1)
+    set.insert(id2)
+    #expect(set.count == 1)
+    set.insert(id3)
+    #expect(set.count == 2)
+}
+
+@Test func elementIdentityFromElementWithPosition() {
+    let element = makeTestElement(ref: "e1", role: "row", label: "Test")
+    let identity = ElementIdentity.from(element, positionKey: "50,100")
+    #expect(identity.role == "row")
+    #expect(identity.title == "Test")
+    #expect(identity.positionKey == "50,100")
+}
+
+// #8: RefStabilityManager with position keys
+
+@Test func refStabilityWithPositionKeys() {
+    let manager = RefStabilityManager()
+
+    // First snapshot with position keys
+    let elements1 = [
+        makeTestElement(ref: "tmp1", role: "row", label: ""),
+        makeTestElement(ref: "tmp2", role: "row", label: ""),
+    ]
+    let posKeys1 = ["100,200", "100,300"]
+    let result1 = manager.stabilize(elements: elements1, positionKeys: posKeys1)
+    #expect(result1[0].ref == "e1")
+    #expect(result1[1].ref == "e2")
+
+    // Second snapshot with same position keys but different tmp refs
+    let elements2 = [
+        makeTestElement(ref: "x1", role: "row", label: ""),
+        makeTestElement(ref: "x2", role: "row", label: ""),
+    ]
+    let posKeys2 = ["100,200", "100,300"]
+    let result2 = manager.stabilize(elements: elements2, positionKeys: posKeys2)
+    #expect(result2[0].ref == "e1") // Same position → same ref
+    #expect(result2[1].ref == "e2") // Same position → same ref
+}
+
+// #9: --depth is passed through snapshot path (verify models)
+
+@Test func transportActionDepthParameter() {
+    let action = TransportAction(
+        type: "snapshot", app: "TestApp", bundleId: nil, pid: 1, depth: 10
+    )
+    #expect(action.depth == 10)
+
+    let actionDefault = TransportAction(
+        type: "snapshot", app: "TestApp", bundleId: nil, pid: 1
+    )
+    #expect(actionDefault.depth == nil)
+}
+
+// Collection safe subscript
+
+@Test func collectionSafeSubscript() {
+    let arr = [1, 2, 3]
+    #expect(arr[safe: 0] == 1)
+    #expect(arr[safe: 2] == 3)
+    #expect(arr[safe: 3] == nil)
+    #expect(arr[safe: -1] == nil)
+}
+
+@Test func collectionSafeSubscriptEmpty() {
+    let arr: [String] = []
+    #expect(arr[safe: 0] == nil)
+}
+
 @Test func compactFormatterFormatActResult() {
     let data: [String: AnyCodable] = [
         "success": AnyCodable(true),

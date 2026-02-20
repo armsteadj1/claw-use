@@ -11,7 +11,7 @@ struct CUA: ParsableCommand {
         commandName: "cua",
         abstract: "Allowing claws to make better use of any application.",
         version: "0.3.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self, ProcessCmd.self, EventsCmd.self, MilestonesCmd.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Wait.self, Assert.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self, ProcessCmd.self, EventsCmd.self, MilestonesCmd.self]
     )
 }
 
@@ -519,7 +519,7 @@ struct Act: ParsableCommand {
     @Argument(help: "App name (partial match, case-insensitive)")
     var app: String?
 
-    @Argument(help: "Action: click, focus, fill, clear, toggle, select, eval, script")
+    @Argument(help: "Action: click, focus, fill, clear, toggle, select, select-row, eval, script")
     var action: String
 
     @Option(name: .long, help: "Element ref (e.g., e4)")
@@ -543,10 +543,92 @@ struct Act: ParsableCommand {
     @Option(name: .long, help: "Output format (compact or json)")
     var format: String = "compact"
 
+    @Option(name: .long, help: "Coordinate click: x,y (e.g., --at 150,350)")
+    var at: String?
+
+    @Flag(name: .long, help: "Treat --at coordinates as window-relative")
+    var relative: Bool = false
+
+    @Option(name: .long, help: "Row index for select-row action")
+    var index: Int?
+
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
     func run() throws {
+        // Handle coordinate click (#2)
+        if let coords = at {
+            let parts = coords.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            guard parts.count == 2 else {
+                fputs("Error: --at requires x,y format (e.g., --at 150,350)\n", stderr)
+                throw ExitCode.failure
+            }
+            let x = parts[0], y = parts[1]
+
+            if relative {
+                guard let runningApp = AXBridge.resolveApp(name: app, pid: pid) else {
+                    throw ExitCode.failure
+                }
+                let result = ActionExecutor.clickAtRelativeCoordinate(x: x, y: y, app: runningApp)
+                let output: [String: AnyCodable] = [
+                    "success": AnyCodable(result.success),
+                    "app": AnyCodable(runningApp.localizedName ?? "Unknown"),
+                    "action": AnyCodable("click"),
+                    "at": AnyCodable("\(x),\(y)"),
+                    "relative": AnyCodable(true),
+                    "error": AnyCodable(result.error as Any),
+                ]
+                if format == "compact" {
+                    print(CompactFormatter.formatActResult(data: output))
+                } else {
+                    try JSONOutput.print(output, pretty: pretty)
+                }
+                if !result.success { throw ExitCode.failure }
+                return
+            } else {
+                let result = ActionExecutor.clickAtCoordinate(x: x, y: y)
+                let output: [String: AnyCodable] = [
+                    "success": AnyCodable(result.success),
+                    "action": AnyCodable("click"),
+                    "at": AnyCodable("\(x),\(y)"),
+                    "error": AnyCodable(result.error as Any),
+                ]
+                if format == "compact" {
+                    print(CompactFormatter.formatActResult(data: output))
+                } else {
+                    try JSONOutput.print(output, pretty: pretty)
+                }
+                if !result.success { throw ExitCode.failure }
+                return
+            }
+        }
+
+        // Handle select-row action (#7)
+        if action.lowercased() == "select-row" {
+            guard let rowIndex = index else {
+                fputs("Error: select-row requires --index\n", stderr)
+                throw ExitCode.failure
+            }
+            guard let runningApp = AXBridge.resolveApp(name: app, pid: pid) else {
+                throw ExitCode.failure
+            }
+            let result = ActionExecutor.selectRowByIndex(index: rowIndex, app: runningApp)
+            let output: [String: AnyCodable] = [
+                "success": AnyCodable(result.success),
+                "app": AnyCodable(runningApp.localizedName ?? "Unknown"),
+                "action": AnyCodable("select-row"),
+                "index": AnyCodable(rowIndex),
+                "error": AnyCodable(result.error as Any),
+            ]
+            if format == "compact" {
+                print(CompactFormatter.formatActResult(data: output))
+            } else {
+                try JSONOutput.print(output, pretty: pretty)
+            }
+            if !result.success { throw ExitCode.failure }
+            return
+        }
+
         // Try daemon
         do {
             var params: [String: AnyCodable] = [
@@ -734,10 +816,10 @@ struct Act: ParsableCommand {
 
 struct Open: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Open/launch an application by name or bundle ID"
+        abstract: "Open/launch an application by name, bundle ID, or file path"
     )
 
-    @Argument(help: "App name (e.g., 'Safari', 'Obsidian') or bundle ID (e.g., 'md.obsidian')")
+    @Argument(help: "App name, bundle ID, or path to .app bundle or executable")
     var app: String
 
     @Option(name: .long, help: "URL or file to open with the app")
@@ -747,6 +829,67 @@ struct Open: ParsableCommand {
     var wait: Bool = false
 
     func run() throws {
+        let fm = FileManager.default
+
+        // Detect if app is a file path (#5: launch arbitrary binaries)
+        let isPath = app.hasPrefix("/") || app.hasPrefix("./") || app.hasPrefix("~")
+        let resolvedPath = isPath ? (app as NSString).expandingTildeInPath : app
+
+        if isPath && fm.fileExists(atPath: resolvedPath) {
+            if resolvedPath.hasSuffix(".app") {
+                // .app bundle — use /usr/bin/open
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                var args = [resolvedPath]
+                if wait { args.insert("-W", at: 0) }
+                if let urlStr = url { args.append(urlStr) }
+                process.arguments = args
+                let errPipe = Foundation.Pipe()
+                process.standardError = errPipe
+                try process.run()
+                process.waitUntilExit()
+                if process.terminationStatus != 0 {
+                    let errorData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                    let errorStr = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+                    fputs("Error: \(errorStr)", stderr)
+                    throw ExitCode.failure
+                }
+            } else {
+                // Bare executable — launch directly
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: resolvedPath)
+                process.arguments = []
+                // Don't block — launch in background
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                try process.run()
+                if wait {
+                    process.waitUntilExit()
+                }
+            }
+
+            Thread.sleep(forTimeInterval: 1.0)
+
+            // Try to find the launched app
+            let basename = (resolvedPath as NSString).lastPathComponent
+                .replacingOccurrences(of: ".app", with: "")
+            let workspace = NSWorkspace.shared
+            let runningApp = workspace.runningApplications.first {
+                $0.localizedName?.lowercased().contains(basename.lowercased()) ?? false
+            }
+
+            let result: [String: AnyCodable] = [
+                "success": AnyCodable(true),
+                "app": AnyCodable(runningApp?.localizedName ?? basename),
+                "pid": AnyCodable(runningApp?.processIdentifier ?? 0),
+                "bundleId": AnyCodable(runningApp?.bundleIdentifier ?? ""),
+                "path": AnyCodable(resolvedPath),
+            ]
+            try JSONOutput.print(result, pretty: false)
+            return
+        }
+
+        // Standard app name / bundle ID launch via `open -a`
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
 
@@ -1228,6 +1371,157 @@ struct Pipe: ParsableCommand {
         if !element.actions.isEmpty && score > 0 { score += 5 }
 
         return score
+    }
+}
+
+// MARK: - wait (#3)
+
+struct Wait: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Wait for an element to appear or disappear in an app's UI"
+    )
+
+    @Argument(help: "App name (partial match, case-insensitive)")
+    var app: String?
+
+    @Option(name: .long, help: "Wait for element matching this string to appear")
+    var match: String?
+
+    @Option(name: .long, help: "Wait for element matching this string to disappear")
+    var matchGone: String?
+
+    @Option(name: .long, help: "Timeout in seconds (default: 10)")
+    var timeout: Double = 10
+
+    @Option(name: .long, help: "Poll interval in milliseconds (default: 500)")
+    var interval: Int = 500
+
+    @Option(name: .long, help: "App PID")
+    var pid: Int32?
+
+    func run() throws {
+        guard match != nil || matchGone != nil else {
+            fputs("Error: --match or --match-gone is required\n", stderr)
+            throw ExitCode.failure
+        }
+
+        guard AXBridge.checkAccessibilityPermission() else {
+            fputs("Error: Accessibility permission not granted.\n", stderr)
+            AXBridge.requestPermission()
+            throw ExitCode.failure
+        }
+
+        guard let runningApp = AXBridge.resolveApp(name: app, pid: pid) else {
+            throw ExitCode.failure
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        let intervalSec = Double(interval) / 1000.0
+        let enricher = Enricher()
+
+        while Date() < deadline {
+            let refMap = RefMap()
+            let snapshot = enricher.snapshot(app: runningApp, refMap: refMap)
+            let allElements = snapshot.content.sections.flatMap { $0.elements }
+
+            if let matchStr = match {
+                // Wait for element to appear
+                let needle = matchStr.lowercased()
+                let found = allElements.contains { el in
+                    let label = (el.label ?? "").lowercased()
+                    let valStr = (el.value?.value as? String ?? "").lowercased()
+                    return label.contains(needle) || valStr.contains(needle)
+                }
+                if found {
+                    print("{\"success\":true,\"matched\":\"\(matchStr)\",\"event\":\"appeared\"}")
+                    return
+                }
+            }
+
+            if let goneStr = matchGone {
+                // Wait for element to disappear
+                let needle = goneStr.lowercased()
+                let found = allElements.contains { el in
+                    let label = (el.label ?? "").lowercased()
+                    let valStr = (el.value?.value as? String ?? "").lowercased()
+                    return label.contains(needle) || valStr.contains(needle)
+                }
+                if !found {
+                    print("{\"success\":true,\"matched\":\"\(goneStr)\",\"event\":\"disappeared\"}")
+                    return
+                }
+            }
+
+            Thread.sleep(forTimeInterval: intervalSec)
+        }
+
+        // Timeout
+        let target = match ?? matchGone ?? ""
+        let event = match != nil ? "appear" : "disappear"
+        fputs("Timeout: \"\(target)\" did not \(event) within \(timeout)s\n", stderr)
+        throw ExitCode.failure
+    }
+}
+
+// MARK: - assert (#6)
+
+struct Assert: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Check if an element exists in an app's UI (exits 0 if found, 1 if not)"
+    )
+
+    @Argument(help: "App name (partial match, case-insensitive)")
+    var app: String?
+
+    @Option(name: .long, help: "Element text to search for")
+    var match: String
+
+    @Option(name: .long, help: "App PID")
+    var pid: Int32?
+
+    @Option(name: .long, help: "Output format (compact or json)")
+    var format: String = "compact"
+
+    func run() throws {
+        guard AXBridge.checkAccessibilityPermission() else {
+            fputs("Error: Accessibility permission not granted.\n", stderr)
+            AXBridge.requestPermission()
+            throw ExitCode.failure
+        }
+
+        guard let runningApp = AXBridge.resolveApp(name: app, pid: pid) else {
+            throw ExitCode.failure
+        }
+
+        let enricher = Enricher()
+        let refMap = RefMap()
+        let snapshot = enricher.snapshot(app: runningApp, refMap: refMap)
+        let allElements = snapshot.content.sections.flatMap { $0.elements }
+
+        let needle = match.lowercased()
+        let found = allElements.contains { el in
+            let label = (el.label ?? "").lowercased()
+            let valStr = (el.value?.value as? String ?? "").lowercased()
+            let role = el.role.lowercased()
+            return label.contains(needle) || valStr.contains(needle) || role.contains(needle)
+        }
+
+        if format == "json" {
+            let output: [String: AnyCodable] = [
+                "found": AnyCodable(found),
+                "match": AnyCodable(match),
+                "app": AnyCodable(snapshot.app),
+            ]
+            try JSONOutput.print(output, pretty: false)
+        } else {
+            if found {
+                print("assert: \"\(match)\" found in \(snapshot.app)")
+            } else {
+                print("assert: \"\(match)\" NOT found in \(snapshot.app)")
+            }
+        }
+
+        if !found { throw ExitCode.failure }
     }
 }
 

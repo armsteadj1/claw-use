@@ -347,3 +347,12 @@ extension String {
             .filter { $0.isLetter || $0.isNumber || $0 == "_" }
     }
 }
+
+// MARK: - Collection Helpers
+
+extension Collection {
+    /// Safe subscript that returns nil for out-of-bounds indices
+    public subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}

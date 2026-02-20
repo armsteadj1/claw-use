@@ -298,9 +298,11 @@ final class Router {
             return JSONRPCResponse(error: JSONRPCError(code: -2, message: "App not found"), id: id)
         }
 
+        let depth = (params["depth"]?.value as? Int) ?? 50
+
         let enricher = Enricher()
         let refMap = RefMap()
-        let snapshot = enricher.snapshot(app: runningApp, refMap: refMap)
+        let snapshot = enricher.snapshot(app: runningApp, maxDepth: depth, refMap: refMap)
 
         guard let matchStr = matchStr else {
             return JSONRPCResponse(error: JSONRPCError(code: -5, message: "--match required for pipe"), id: id)

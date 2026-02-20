@@ -2,21 +2,31 @@ import Foundation
 
 // MARK: - Element Identity (for ref stability)
 
-/// Identifies an element across snapshots by its stable properties
+/// Identifies an element across snapshots by its stable properties.
+/// Uses AX identifier (most stable), then role+title, with position-based fallback
+/// for elements that have no title/identifier (e.g., unlabeled rows).
 public struct ElementIdentity: Hashable {
     public let role: String
     public let title: String?
     public let identifier: String?
+    /// Position-based fallback key (rounded to nearest 5px to handle minor layout shifts)
+    public let positionKey: String?
 
-    public init(role: String, title: String?, identifier: String?) {
+    public init(role: String, title: String?, identifier: String?, positionKey: String? = nil) {
         self.role = role
         self.title = title
         self.identifier = identifier
+        self.positionKey = positionKey
     }
 
     /// Build identity from an Element
     public static func from(_ element: Element) -> ElementIdentity {
         ElementIdentity(role: element.role, title: element.label, identifier: nil)
+    }
+
+    /// Build identity from an Element with position fallback
+    public static func from(_ element: Element, positionKey: String?) -> ElementIdentity {
+        ElementIdentity(role: element.role, title: element.label, identifier: nil, positionKey: positionKey)
     }
 }
 
@@ -50,7 +60,8 @@ public final class RefStabilityManager {
 
     /// Assign stable refs to a list of elements from a new snapshot.
     /// Returns a new list of Elements with stabilized refs.
-    public func stabilize(elements: [Element]) -> [Element] {
+    /// positionKeys: optional parallel array of position-based keys for fallback identity
+    public func stabilize(elements: [Element], positionKeys: [String?]? = nil) -> [Element] {
         lock.lock()
         defer { lock.unlock() }
 
@@ -68,8 +79,9 @@ public final class RefStabilityManager {
         var seenIdentities = Set<ElementIdentity>()
         var result: [Element] = []
 
-        for element in elements {
-            let identity = ElementIdentity(role: element.role, title: element.label, identifier: nil)
+        for (i, element) in elements.enumerated() {
+            let posKey: String? = positionKeys.flatMap { $0[safe: i] } ?? nil
+            let identity = ElementIdentity(role: element.role, title: element.label, identifier: nil, positionKey: posKey)
             seenIdentities.insert(identity)
 
             let ref: String

@@ -226,6 +226,75 @@ public struct ActionExecutor {
         )
     }
 
+    // MARK: - Select Row by Index (#7)
+
+    /// Select row by index using AXUIElement tree traversal
+    public static func selectRowByIndex(index: Int, app: NSRunningApplication) -> ActionResultOutput {
+        let axApp = AXBridge.appElement(for: app)
+        let rows = findAllRows(element: axApp, depth: 0, maxDepth: 20)
+        guard index >= 0 && index < rows.count else {
+            return ActionResultOutput(success: false, error: "Row index \(index) out of range (have \(rows.count) rows)", snapshot: nil)
+        }
+        let row = rows[index]
+        // Try AXPress first
+        if AXUIElementPerformAction(row, kAXPressAction as CFString) == .success {
+            Thread.sleep(forTimeInterval: 0.3)
+            return ActionResultOutput(success: true, error: nil, snapshot: nil)
+        }
+        // Try setting AXSelected
+        let err = AXUIElementSetAttributeValue(row, kAXSelectedAttribute as CFString, true as CFTypeRef)
+        if err == .success {
+            Thread.sleep(forTimeInterval: 0.3)
+            return ActionResultOutput(success: true, error: nil, snapshot: nil)
+        }
+        return ActionResultOutput(success: false, error: "Failed to select row \(index): AX error \(err.rawValue)", snapshot: nil)
+    }
+
+    private static func findAllRows(element: AXUIElement, depth: Int, maxDepth: Int) -> [AXUIElement] {
+        guard depth < maxDepth else { return [] }
+        var rows: [AXUIElement] = []
+        let role = AXTreeWalker.readString(element, kAXRoleAttribute)
+        if role == "AXRow" {
+            rows.append(element)
+        }
+        if let children = AXTreeWalker.readChildren(element) {
+            for child in children {
+                rows.append(contentsOf: findAllRows(element: child, depth: depth + 1, maxDepth: maxDepth))
+            }
+        }
+        return rows
+    }
+
+    // MARK: - Coordinate Click (#2)
+
+    /// Click at absolute screen coordinates using CGEvent
+    public static func clickAtCoordinate(x: Double, y: Double) -> ActionResultOutput {
+        let point = CGPoint(x: x, y: y)
+        guard let mouseDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
+              let mouseUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else {
+            return ActionResultOutput(success: false, error: "Failed to create CGEvent for click", snapshot: nil)
+        }
+        mouseDown.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.05)
+        mouseUp.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.3)
+        return ActionResultOutput(success: true, error: nil, snapshot: nil)
+    }
+
+    /// Click at window-relative coordinates by adding window origin offset
+    public static func clickAtRelativeCoordinate(x: Double, y: Double, app: NSRunningApplication) -> ActionResultOutput {
+        let axApp = AXBridge.appElement(for: app)
+        var windowRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXMainWindowAttribute as CFString, &windowRef) == .success else {
+            return ActionResultOutput(success: false, error: "Cannot find main window for coordinate offset", snapshot: nil)
+        }
+        let window = windowRef as! AXUIElement
+        guard let pos = AXTreeWalker.readPosition(window) else {
+            return ActionResultOutput(success: false, error: "Cannot read window position", snapshot: nil)
+        }
+        return clickAtCoordinate(x: pos.x + x, y: pos.y + y)
+    }
+
     private func findMenuItem(in element: AXUIElement, label: String) -> AXUIElement? {
         guard let children = AXTreeWalker.readChildren(element) else { return nil }
         for child in children {

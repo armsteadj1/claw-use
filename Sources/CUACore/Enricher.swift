@@ -183,6 +183,8 @@ public class RefAssigner {
         guard let role = node.role else { return false }
         if Self.interactiveRoles.contains(role) { return true }
         if role == "AXGroup" && node.actions.contains("AXPress") { return true }
+        // AXRow: assign ref so rows become clickable (#1: AXRow label bubbling)
+        if role == "AXRow" { return true }
         return false
     }
 }
@@ -351,6 +353,58 @@ public struct Grouper {
         }
     }
 
+    /// Bubble up the first meaningful label from children of a container node (e.g. AXRow).
+    /// Recursively searches children for the first non-empty text, button label, or static text value.
+    public static func bubbleUpLabel(from node: RawAXNode) -> String? {
+        // Check this node first
+        if let title = node.title, !title.isEmpty { return title }
+        if let desc = node.axDescription, !desc.isEmpty { return desc }
+        if let role = node.role, role == "AXStaticText" || role == "AXButton" || role == "AXLink" {
+            if let val = node.value?.value as? String, !val.isEmpty { return val }
+        }
+        // Recurse into children
+        for child in node.children {
+            if let found = bubbleUpLabel(from: child) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    /// Collect all meaningful text labels from children for composite row labels.
+    /// Returns parts joined by " | " for rows that contain multiple distinct labels.
+    public static func bubbleUpCompositeLabel(from node: RawAXNode) -> String? {
+        var parts: [String] = []
+        collectLabels(from: node, into: &parts)
+        let unique = parts.filter { !$0.isEmpty }
+        guard !unique.isEmpty else { return nil }
+        return unique.joined(separator: " | ")
+    }
+
+    private static func collectLabels(from node: RawAXNode, into parts: inout [String]) {
+        if let role = node.role {
+            if role == "AXStaticText" {
+                if let val = node.value?.value as? String, !val.isEmpty {
+                    parts.append(val)
+                    return
+                }
+                if let title = node.title, !title.isEmpty {
+                    parts.append(title)
+                    return
+                }
+            }
+            if role == "AXButton" || role == "AXLink" {
+                if let title = node.title, !title.isEmpty {
+                    parts.append(title)
+                    return
+                }
+            }
+        }
+        for child in node.children {
+            collectLabels(from: child, into: &parts)
+        }
+    }
+
     public static func buildElements(from nodes: [RawAXNode], refAssigner: RefAssigner, refMap: RefMap?) -> [Element] {
         var elements: [Element] = []
         var seen = Set<String>()
@@ -365,7 +419,11 @@ public struct Grouper {
                 seen.insert(textKey)
             }
 
-            let label = node.title.flatMap({ $0.isEmpty ? nil : $0 }) ?? node.axDescription.flatMap({ $0.isEmpty ? nil : $0 }) ?? node.placeholder ?? (node.value?.value as? String).flatMap { role == "AXStaticText" ? $0 : nil }
+            // For AXRow with no label, bubble up child labels (#1: AXRow label bubbling)
+            var label = node.title.flatMap({ $0.isEmpty ? nil : $0 }) ?? node.axDescription.flatMap({ $0.isEmpty ? nil : $0 }) ?? node.placeholder ?? (node.value?.value as? String).flatMap { role == "AXStaticText" ? $0 : nil }
+            if label == nil && role == "AXRow" {
+                label = bubbleUpCompositeLabel(from: node)
+            }
 
             if refAssigner.shouldAssignRef(node) {
                 let ref = refAssigner.nextRef()
@@ -379,11 +437,12 @@ public struct Grouper {
                 if ["AXTextField", "AXTextArea", "AXComboBox"].contains(role) { simplifiedActions.append("fill") }
                 if ["AXCheckBox"].contains(role) { simplifiedActions.append("toggle") }
                 if ["AXPopUpButton", "AXRadioButton", "AXTab"].contains(role) { simplifiedActions.append("select") }
+                if role == "AXRow" { simplifiedActions.append("select") }
 
                 elements.append(Element(
                     ref: ref,
                     role: simplified,
-                    label: node.title.flatMap({ $0.isEmpty ? nil : $0 }) ?? node.axDescription.flatMap({ $0.isEmpty ? nil : $0 }) ?? node.placeholder,
+                    label: label,
                     value: node.value,
                     placeholder: node.placeholder,
                     enabled: node.enabled ?? true,
