@@ -88,6 +88,10 @@ final class Router {
             return handleProcessGroupClear(id: request.id)
         case "process.group.status":
             return handleProcessGroupStatus(id: request.id)
+        case "milestones.list":
+            return handleMilestonesList(id: request.id)
+        case "milestones.validate":
+            return handleMilestonesValidate(params: params, id: request.id)
         default:
             return JSONRPCResponse(error: .methodNotFound, id: request.id)
         }
@@ -545,16 +549,34 @@ final class Router {
         let pid = Int32(pidValue)
         let logPath = params["log"]?.value as? String
         let idleTimeout = (params["idle_timeout"]?.value as? Int).map { TimeInterval($0) } ?? 300
+        let milestonesName = params["milestones"]?.value as? String
 
-        let started = processMonitor.watch(pid: pid, logPath: logPath, idleTimeout: idleTimeout)
+        // Load milestone engine if requested
+        var engine: MilestoneEngine? = nil
+        var milestoneDef: String? = nil
+        if let name = milestonesName {
+            do {
+                let definition = try MilestonePresets.load(nameOrPath: name)
+                engine = MilestoneEngine(definition: definition, eventBus: eventBus, pid: pid)
+                milestoneDef = definition.name
+            } catch {
+                return JSONRPCResponse(error: JSONRPCError(code: -16, message: "Failed to load milestones '\(name)': \(error)"), id: id)
+            }
+        }
+
+        let started = processMonitor.watch(pid: pid, logPath: logPath, idleTimeout: idleTimeout,
+                                           milestoneEngine: engine)
 
         if started {
-            let result: [String: AnyCodable] = [
+            var result: [String: AnyCodable] = [
                 "watching": AnyCodable(true),
                 "pid": AnyCodable(Int(pid)),
                 "log_path": AnyCodable(logPath),
                 "idle_timeout_s": AnyCodable(Int(idleTimeout)),
             ]
+            if let def = milestoneDef {
+                result["milestones"] = AnyCodable(def)
+            }
             return JSONRPCResponse(result: AnyCodable(result), id: id)
         } else {
             if processMonitor.isWatching(pid: pid) {
@@ -749,6 +771,51 @@ final class Router {
             "webhook_subscriptions": AnyCodable(webhookSubs.map { $0 }),
             "webhook_count": AnyCodable(webhookSubs.count),
             "total_event_bus_subscribers": AnyCodable(eventBus.subscriberCount),
+        ]
+        return JSONRPCResponse(result: AnyCodable(result), id: id)
+    }
+
+    // MARK: - milestones.* handlers
+
+    private func handleMilestonesList(id: AnyCodable?) -> JSONRPCResponse {
+        let available = MilestonePresets.listAvailable()
+        let encoded = available.map { item -> AnyCodable in
+            AnyCodable([
+                "name": AnyCodable(item.name),
+                "description": AnyCodable(item.description),
+                "source": AnyCodable(item.source),
+            ] as [String: AnyCodable])
+        }
+        let result: [String: AnyCodable] = [
+            "presets": AnyCodable(encoded),
+            "count": AnyCodable(available.count),
+        ]
+        return JSONRPCResponse(result: AnyCodable(result), id: id)
+    }
+
+    private func handleMilestonesValidate(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        guard let nameOrPath = params["path"]?.value as? String ?? params["name"]?.value as? String else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "milestones.validate requires 'path' or 'name' parameter"), id: id)
+        }
+
+        let definition: MilestoneDefinition
+        do {
+            definition = try MilestonePresets.load(nameOrPath: nameOrPath)
+        } catch {
+            let result: [String: AnyCodable] = [
+                "valid": AnyCodable(false),
+                "error": AnyCodable("\(error)"),
+            ]
+            return JSONRPCResponse(result: AnyCodable(result), id: id)
+        }
+
+        let issues = MilestoneYAMLParser.validate(definition)
+        let errors = issues.filter { $0.hasPrefix("error:") }
+        let result: [String: AnyCodable] = [
+            "valid": AnyCodable(errors.isEmpty),
+            "name": AnyCodable(definition.name),
+            "pattern_count": AnyCodable(definition.patterns.count),
+            "issues": AnyCodable(issues.map { AnyCodable($0) }),
         ]
         return JSONRPCResponse(result: AnyCodable(result), id: id)
     }

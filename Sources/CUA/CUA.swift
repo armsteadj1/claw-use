@@ -11,7 +11,7 @@ struct CUA: ParsableCommand {
         commandName: "cua",
         abstract: "Allowing claws to make better use of any application.",
         version: "0.3.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self, ProcessCmd.self, EventsCmd.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self, ProcessCmd.self, EventsCmd.self, MilestonesCmd.self]
     )
 }
 
@@ -1315,6 +1315,9 @@ struct ProcessWatch: ParsableCommand {
     @Option(name: .long, help: "Idle timeout in seconds (default: 300)")
     var idleTimeout: Int = 300
 
+    @Option(name: .long, help: "Milestone preset name or path to milestone YAML file")
+    var milestones: String?
+
     @Flag(name: .long, help: "Output events as NDJSON (one JSON object per line)")
     var json: Bool = false
 
@@ -1328,6 +1331,7 @@ struct ProcessWatch: ParsableCommand {
             "idle_timeout": AnyCodable(idleTimeout),
         ]
         if let log = log { params["log"] = AnyCodable(log) }
+        if let milestones = milestones { params["milestones"] = AnyCodable(milestones) }
 
         let response = try callDaemon(method: "process.watch", params: params)
 
@@ -1337,9 +1341,9 @@ struct ProcessWatch: ParsableCommand {
         }
 
         if json || stream {
-            // Stream events filtered to this PID's process.* events
+            // Stream events filtered to this PID's process.* events + milestones
             let streamParams: [String: AnyCodable] = [
-                "types": AnyCodable("process.tool_start,process.tool_end,process.message,process.error,process.idle,process.exit"),
+                "types": AnyCodable("process.tool_start,process.tool_end,process.message,process.error,process.idle,process.exit,process.milestone"),
             ]
             try DaemonClient.stream(params: streamParams)
         } else {
@@ -1702,5 +1706,114 @@ struct EventsRecent: ParsableCommand {
 
         let response = try callDaemon(method: "events", params: params)
         try printResponse(response, pretty: pretty)
+    }
+}
+
+// MARK: - milestones
+
+struct MilestonesCmd: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "milestones",
+        abstract: "Manage milestone definitions for process watching",
+        subcommands: [MilestonesList.self, MilestonesValidate.self]
+    )
+}
+
+struct MilestonesList: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "list", abstract: "List available milestone presets")
+
+    @Flag(name: .long, help: "Output as JSON")
+    var json: Bool = false
+
+    func run() throws {
+        let available = MilestonePresets.listAvailable()
+
+        if json {
+            let encoded = available.map { item -> [String: AnyCodable] in
+                [
+                    "name": AnyCodable(item.name),
+                    "description": AnyCodable(item.description),
+                    "source": AnyCodable(item.source),
+                ]
+            }
+            try JSONOutput.print(encoded.map { AnyCodable($0) }, pretty: false)
+            return
+        }
+
+        print("Available Milestone Presets (\(available.count))")
+        print("──────────────────────────────────────────")
+        for item in available {
+            let tag = item.source == "builtin" ? "[builtin]" : "[custom]"
+            let nameStr = item.name.padding(toLength: 16, withPad: " ", startingAt: 0)
+            print("  \(nameStr) \(tag)  \(item.description)")
+        }
+        print("")
+        print("Usage: cua process watch <PID> --log <FILE> --milestones <NAME>")
+    }
+}
+
+struct MilestonesValidate: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "validate", abstract: "Validate a milestone definition file")
+
+    @Argument(help: "Path to milestone YAML or JSON file, or preset name")
+    var path: String
+
+    @Flag(name: .long, help: "Output as JSON")
+    var json: Bool = false
+
+    func run() throws {
+        let definition: MilestoneDefinition
+        do {
+            definition = try MilestonePresets.load(nameOrPath: path)
+        } catch {
+            if json {
+                let output: [String: AnyCodable] = [
+                    "valid": AnyCodable(false),
+                    "error": AnyCodable("\(error)"),
+                ]
+                try JSONOutput.print(output, pretty: false)
+            } else {
+                fputs("Error: \(error)\n", stderr)
+            }
+            throw ExitCode.failure
+        }
+
+        let issues = MilestoneYAMLParser.validate(definition)
+        let errors = issues.filter { $0.hasPrefix("error:") }
+        let warnings = issues.filter { $0.hasPrefix("warning:") }
+        let valid = errors.isEmpty
+
+        if json {
+            let output: [String: AnyCodable] = [
+                "valid": AnyCodable(valid),
+                "name": AnyCodable(definition.name),
+                "description": AnyCodable(definition.description),
+                "format": AnyCodable(definition.format.rawValue),
+                "pattern_count": AnyCodable(definition.patterns.count),
+                "errors": AnyCodable(errors.map { AnyCodable($0) }),
+                "warnings": AnyCodable(warnings.map { AnyCodable($0) }),
+            ]
+            try JSONOutput.print(output, pretty: false)
+        } else {
+            if valid {
+                print("Valid: \(definition.name)")
+                print("  Description: \(definition.description)")
+                print("  Format: \(definition.format.rawValue)")
+                print("  Patterns: \(definition.patterns.count)")
+                for pattern in definition.patterns {
+                    let msg = pattern.message ?? pattern.messageTemplate ?? ""
+                    print("    \(pattern.emoji) \(pattern.type) [\(pattern.dedupe.rawValue)] \(msg)")
+                }
+            } else {
+                fputs("Invalid: \(definition.name)\n", stderr)
+            }
+
+            for issue in issues {
+                let prefix = issue.hasPrefix("error:") ? "  [!]" : "  [~]"
+                print("\(prefix) \(issue)")
+            }
+        }
+
+        if !valid { throw ExitCode.failure }
     }
 }

@@ -141,13 +141,17 @@ public final class ProcessWatcher {
     private var kqueueExitCode: Int32?
     /// kqueue file descriptor for process exit watching (kept open for lifetime)
     private var kqueueFd: Int32 = -1
+    /// Optional milestone engine for pattern-based milestone detection
+    private var milestoneEngine: MilestoneEngine?
 
-    public init(pid: Int32, logPath: String?, idleTimeout: TimeInterval = 300, eventBus: EventBus) {
+    public init(pid: Int32, logPath: String?, idleTimeout: TimeInterval = 300, eventBus: EventBus,
+                milestoneEngine: MilestoneEngine? = nil) {
         self.pid = pid
         self.logPath = logPath
         self.idleTimeout = idleTimeout
         self.eventBus = eventBus
         self.lastActivityTime = Date()
+        self.milestoneEngine = milestoneEngine
     }
 
     /// Start watching the process
@@ -300,6 +304,8 @@ public final class ProcessWatcher {
             if let event = NDJSONParser.parse(line: line, pid: pid) {
                 eventBus.publish(event)
             }
+            // Feed line through milestone engine if configured
+            milestoneEngine?.processLine(line)
         }
     }
 
@@ -475,14 +481,16 @@ public final class ProcessMonitor {
 
     /// Start watching a process. Returns true if watch was started.
     @discardableResult
-    public func watch(pid: Int32, logPath: String? = nil, idleTimeout: TimeInterval = 300) -> Bool {
+    public func watch(pid: Int32, logPath: String? = nil, idleTimeout: TimeInterval = 300,
+                      milestoneEngine: MilestoneEngine? = nil) -> Bool {
         lock.lock()
         if watchers[pid] != nil {
             lock.unlock()
             return false // Already watching
         }
 
-        let watcher = ProcessWatcher(pid: pid, logPath: logPath, idleTimeout: idleTimeout, eventBus: eventBus)
+        let watcher = ProcessWatcher(pid: pid, logPath: logPath, idleTimeout: idleTimeout,
+                                     eventBus: eventBus, milestoneEngine: milestoneEngine)
         watchers[pid] = watcher
         lock.unlock()
 
