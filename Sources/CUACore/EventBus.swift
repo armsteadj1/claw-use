@@ -51,6 +51,7 @@ public enum CUAEventType: String, CaseIterable {
     case processError = "process.error"
     case processIdle = "process.idle"
     case processExit = "process.exit"
+    case processMilestone = "process.milestone"
 
     // Process Group
     case processGroupStateChange = "process.group.state_change"
