@@ -49,6 +49,25 @@ jobs:
           tar czf cua-macos-universal.tar.gz cua cuad
           shasum -a 256 cua-macos-universal.tar.gz > cua-macos-universal.tar.gz.sha256
 
+      - name: Update Homebrew formula
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          VERSION_CLEAN="${VERSION#v}"
+          SHA256=$(awk '{print $1}' dist/cua-macos-universal.tar.gz.sha256)
+          URL="https://github.com/${{ github.repository }}/releases/download/${VERSION}/cua-macos-universal.tar.gz"
+
+          sed -i '' \
+            -e "s|url \"[^\"]*\"|url \"${URL}\"|" \
+            -e "s|sha256 \"[^\"]*\"|sha256 \"${SHA256}\"|" \
+            -e "s|version \"[^\"]*\"|version \"${VERSION_CLEAN}\"|" \
+            Formula/cua.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/cua.rb
+          git diff --cached --quiet || git commit -m "Formula: update cua to ${VERSION}"
+          git push origin HEAD:main
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

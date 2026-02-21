@@ -1,7 +1,8 @@
 class Cua < Formula
   desc "Allowing claws to make better use of any application"
   homepage "https://github.com/thegreysky/agentview"
-  url "https://github.com/thegreysky/agentview/releases/latest/download/cua-macos-universal.tar.gz"
+  url "https://github.com/thegreysky/agentview/releases/download/v0.3.0/cua-macos-universal.tar.gz"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   version "0.3.0"
   license "MIT"
 
