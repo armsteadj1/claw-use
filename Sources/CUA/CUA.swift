@@ -11,7 +11,7 @@ struct CUA: ParsableCommand {
         commandName: "cua",
         abstract: "Allowing claws to make better use of any application.",
         version: "0.3.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Wait.self, Assert.self, Daemon.self, Status.self, Watch.self, Web.self, Screenshot.self, ProcessCmd.self, EventsCmd.self, MilestonesCmd.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Wait.self, Assert.self, Daemon.self, Status.self, Web.self, Screenshot.self, ProcessCmd.self, MilestonesCmd.self]
     )
 }
 
@@ -1525,28 +1525,6 @@ struct Assert: ParsableCommand {
     }
 }
 
-// MARK: - watch
-
-struct Watch: ParsableCommand {
-    static let configuration = CommandConfiguration(
-        abstract: "Stream events from the daemon as JSONL (one event per line)"
-    )
-
-    @Option(name: .long, help: "Filter events by app name (partial match)")
-    var app: String?
-
-    @Option(name: .long, help: "Filter by event types (comma-separated, e.g. app.launched,ax.focus_changed)")
-    var types: String?
-
-    func run() throws {
-        var params: [String: AnyCodable] = [:]
-        if let app = app { params["app"] = AnyCodable(app) }
-        if let types = types { params["types"] = AnyCodable(types) }
-
-        try DaemonClient.stream(params: params)
-    }
-}
-
 // MARK: - web
 
 struct Web: ParsableCommand {
@@ -2095,177 +2073,6 @@ struct ProcessGroupStatus: ParsableCommand {
         }
 
         print(ProcessGroupManager.formatStatus(processes: processes))
-    }
-}
-
-// MARK: - events
-
-struct EventsCmd: ParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "events",
-        abstract: "Event streaming, querying, and webhook subscriptions",
-        subcommands: [EventsSubscribe.self, EventsUnsubscribe.self, EventsList.self, EventsRecent.self]
-    )
-}
-
-struct EventsSubscribe: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "subscribe", abstract: "Subscribe to events — stream via UDS or deliver via webhook")
-
-    @Option(name: .long, help: "Filter pattern (glob-style, e.g. \"process.exit,process.error,process.idle,process.group.state_change\")")
-    var filter: String?
-
-    @Option(name: .long, help: "Filter by app name (partial match)")
-    var app: String?
-
-    @Option(name: .long, help: "Webhook URL to POST events to")
-    var webhook: String?
-
-    @Option(name: .long, help: "Bearer token for webhook auth")
-    var webhookToken: String?
-
-    @Option(name: .long, help: "JSON metadata to merge into every webhook POST payload")
-    var webhookMeta: String?
-
-    @Option(name: .long, help: "Minimum seconds between webhook POSTs (default: 300)")
-    var cooldown: Int = 300
-
-    @Option(name: .long, help: "Max webhook POSTs per hour before circuit breaker trips (default: 20)")
-    var maxWakes: Int = 20
-
-    @Flag(name: .long, help: "Show every event received (even filtered/suppressed)")
-    var verbose: Bool = false
-
-    func run() throws {
-        if let webhookUrl = webhook {
-            // Webhook mode: register webhook subscription with daemon
-            var params: [String: AnyCodable] = [
-                "webhook": AnyCodable(webhookUrl),
-                "cooldown": AnyCodable(cooldown),
-                "max_wakes": AnyCodable(maxWakes),
-                "verbose": AnyCodable(verbose),
-            ]
-            if let filter = filter { params["filter"] = AnyCodable(filter) }
-            if let app = app { params["app"] = AnyCodable(app) }
-            if let token = webhookToken { params["webhook_token"] = AnyCodable(token) }
-            if let meta = webhookMeta { params["webhook_meta"] = AnyCodable(meta) }
-
-            let response = try callDaemon(method: "events.subscribe.webhook", params: params)
-            if let error = response.error {
-                fputs("Error: \(error.message)\n", stderr)
-                throw ExitCode.failure
-            }
-            if let result = response.result, let dict = result.value as? [String: AnyCodable] {
-                let subId = dict["subscription_id"]?.value as? String ?? "?"
-                fputs("Webhook subscription active: \(subId)\n", stderr)
-                fputs("  URL: \(webhookUrl)\n", stderr)
-                fputs("  cooldown: \(cooldown)s, max_wakes: \(maxWakes)/hour\n", stderr)
-            }
-            try printResponse(response, pretty: false)
-        } else {
-            // Streaming mode: subscribe via UDS
-            var params: [String: AnyCodable] = [:]
-            if let filter = filter { params["filter"] = AnyCodable(filter) }
-            if let app = app { params["app"] = AnyCodable(app) }
-
-            try DaemonClient.stream(params: params)
-        }
-    }
-}
-
-struct EventsUnsubscribe: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "unsubscribe", abstract: "Remove a webhook subscription")
-
-    @Argument(help: "Subscription ID (from subscribe output)")
-    var subscriptionId: String
-
-    func run() throws {
-        let params: [String: AnyCodable] = [
-            "subscription_id": AnyCodable(subscriptionId),
-        ]
-        let response = try callDaemon(method: "events.unsubscribe", params: params)
-        if let error = response.error {
-            fputs("Error: \(error.message)\n", stderr)
-            throw ExitCode.failure
-        }
-        print("Unsubscribed: \(subscriptionId)")
-    }
-}
-
-struct EventsList: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "list", abstract: "Show active event subscriptions and their webhook state")
-
-    @Flag(name: .long, help: "Pretty print JSON output")
-    var pretty: Bool = false
-
-    func run() throws {
-        let response = try callDaemon(method: "events.subscriptions")
-        if let error = response.error {
-            fputs("Error: \(error.message)\n", stderr)
-            throw ExitCode.failure
-        }
-
-        guard let result = response.result, let dict = result.value as? [String: AnyCodable] else {
-            print("No active subscriptions")
-            return
-        }
-
-        let webhookCount = dict["webhook_count"]?.value as? Int ?? 0
-        let totalSubs = dict["total_event_bus_subscribers"]?.value as? Int ?? 0
-
-        if pretty {
-            try printResponse(response, pretty: true)
-        } else {
-            print("Active Subscriptions (\(totalSubs) total, \(webhookCount) webhook)")
-            print("──────────────────────────────────────────")
-
-            if let webhookSubs = dict["webhook_subscriptions"]?.value as? [AnyCodable] {
-                for sub in webhookSubs {
-                    guard let d = sub.value as? [String: AnyCodable] else { continue }
-                    let subId = d["subscription_id"]?.value as? String ?? "?"
-                    let url = d["webhook_url"]?.value as? String ?? "?"
-                    let postsHour = d["posts_this_hour"]?.value as? Int ?? 0
-                    let broken = d["circuit_broken"]?.value as? Bool ?? false
-                    let pending = d["pending_events"]?.value as? Int ?? 0
-                    let delivered = d["total_delivered"]?.value as? Int ?? 0
-                    let failed = d["total_failed"]?.value as? Int ?? 0
-
-                    let status = broken ? "[CIRCUIT BROKEN]" : "[active]"
-                    print("  \(subId)  \(status)")
-                    print("    url: \(url)")
-                    print("    posts/hour: \(postsHour), pending: \(pending), delivered: \(delivered), failed: \(failed)")
-                }
-            }
-
-            if webhookCount == 0 {
-                print("  (no webhook subscriptions)")
-            }
-        }
-    }
-}
-
-struct EventsRecent: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "recent", abstract: "Get recent events (optionally filtered)")
-
-    @Option(name: .long, help: "Filter pattern (glob-style, e.g. \"process.*\")")
-    var filter: String?
-
-    @Option(name: .long, help: "Filter by app name")
-    var app: String?
-
-    @Option(name: .long, help: "Max events to return")
-    var limit: Int?
-
-    @Flag(name: .long, help: "Pretty print JSON output")
-    var pretty: Bool = false
-
-    func run() throws {
-        var params: [String: AnyCodable] = [:]
-        if let filter = filter { params["filter"] = AnyCodable(filter) }
-        if let app = app { params["app"] = AnyCodable(app) }
-        if let limit = limit { params["limit"] = AnyCodable(limit) }
-
-        let response = try callDaemon(method: "events", params: params)
-        try printResponse(response, pretty: pretty)
     }
 }
 
