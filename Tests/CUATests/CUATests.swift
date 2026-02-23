@@ -3523,3 +3523,87 @@ private func normalizeScore(_ raw: Int) -> Double {
     // text.contains = 80 → confidence 0.80
     #expect(normalizeScore(score) == 0.80)
 }
+
+// MARK: - Remote Models Tests
+
+@Test func remoteConfigParseDuration() {
+    #expect(RemoteConfig.parseDuration("1d") == 86400)
+    #expect(RemoteConfig.parseDuration("7d") == 604800)
+    #expect(RemoteConfig.parseDuration("1h") == 3600)
+    #expect(RemoteConfig.parseDuration("30m") == 1800)
+    #expect(RemoteConfig.parseDuration("5s") == 5)
+    #expect(RemoteConfig.parseDuration("60") == 60)
+}
+
+@Test func remoteConfigDefaults() {
+    let config = RemoteConfig()
+    #expect(config.port == 9876)
+    #expect(config.retainSeconds == 86400)
+}
+
+@Test func remoteCryptoGenerateKey() {
+    let (data1, b641) = RemoteCrypto.generateKey()
+    let (data2, b642) = RemoteCrypto.generateKey()
+    #expect(data1.count == 32)
+    #expect(data2.count == 32)
+    #expect(data1 != data2)
+    #expect(b641 != b642)
+    // Base64 should decode back to the original bytes
+    #expect(Data(base64Encoded: b641) == data1)
+}
+
+@Test func remoteCryptoHMACSHA256() {
+    let (keyData, _) = RemoteCrypto.generateKey()
+    let msg = "test-peer-id:1700000000"
+    let hex1 = RemoteCrypto.hmacSHA256(message: msg, secret: keyData)
+    let hex2 = RemoteCrypto.hmacSHA256(message: msg, secret: keyData)
+    #expect(hex1 == hex2)
+    #expect(hex1.count == 64)  // SHA256 = 32 bytes = 64 hex chars
+    #expect(RemoteCrypto.verifyHMAC(message: msg, secret: keyData, expectedHex: hex1))
+    #expect(!RemoteCrypto.verifyHMAC(message: msg + "x", secret: keyData, expectedHex: hex1))
+}
+
+@Test func remoteCryptoHMACDifferentKeys() {
+    let (key1, _) = RemoteCrypto.generateKey()
+    let (key2, _) = RemoteCrypto.generateKey()
+    let msg = "peer:12345"
+    let hex1 = RemoteCrypto.hmacSHA256(message: msg, secret: key1)
+    let hex2 = RemoteCrypto.hmacSHA256(message: msg, secret: key2)
+    #expect(hex1 != hex2)
+}
+
+@Test func remoteSessionCodable() throws {
+    let session = RemoteSession(
+        peerId: "peer-123",
+        peerName: "MacBook Pro",
+        sessionToken: "token-abc",
+        lastUsed: Date(timeIntervalSince1970: 1_700_000_000),
+        createdAt: Date(timeIntervalSince1970: 1_699_999_000)
+    )
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    let data = try encoder.encode(session)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let decoded = try decoder.decode(RemoteSession.self, from: data)
+    #expect(decoded.peerId == "peer-123")
+    #expect(decoded.peerName == "MacBook Pro")
+    #expect(decoded.sessionToken == "token-abc")
+}
+
+@Test func remoteSenderStateCodable() throws {
+    let state = RemoteSenderState(
+        host: "mac-mini.local",
+        port: 9876,
+        peerId: "peer-456",
+        sessionToken: "sess-xyz",
+        intervalSeconds: 5
+    )
+    let data = try JSONEncoder().encode(state)
+    let decoded = try JSONDecoder().decode(RemoteSenderState.self, from: data)
+    #expect(decoded.host == "mac-mini.local")
+    #expect(decoded.port == 9876)
+    #expect(decoded.peerId == "peer-456")
+    #expect(decoded.sessionToken == "sess-xyz")
+    #expect(decoded.intervalSeconds == 5)
+}

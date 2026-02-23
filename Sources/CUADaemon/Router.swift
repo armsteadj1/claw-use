@@ -16,6 +16,10 @@ final class Router {
     let processMonitor: ProcessMonitor
     let processGroup: ProcessGroupManager
 
+    // Remote visibility
+    private lazy var remoteStore = RemoteStore()
+    private var remoteHTTPServer: RemoteHTTPServer?
+
     // Health tracking
     private var _lastSnapshotTime: Date?
     private var _totalConnections: Int = 0
@@ -108,6 +112,16 @@ final class Router {
             return handleMilestonesList(id: request.id)
         case "milestones.validate":
             return handleMilestonesValidate(params: params, id: request.id)
+        case "remote.accept":
+            return handleRemoteAccept(params: params, id: request.id)
+        case "remote.snapshot":
+            return handleRemoteSnapshot(params: params, id: request.id)
+        case "remote.history":
+            return handleRemoteHistory(params: params, id: request.id)
+        case "remote.list":
+            return handleRemoteList(id: request.id)
+        case "remote.revoke":
+            return handleRemoteRevoke(params: params, id: request.id)
         default:
             return JSONRPCResponse(error: .methodNotFound, id: request.id)
         }
@@ -929,5 +943,183 @@ final class Router {
         } else {
             return AnyCodable(value)
         }
+    }
+
+    // MARK: - Remote Visibility Handlers
+
+    private func handleRemoteAccept(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        let port = UInt16(params["port"]?.value as? Int ?? remoteStore.config.port)
+        let retain = params["retain"]?.value as? String ?? "1d"
+
+        // Update config with requested values
+        var config = remoteStore.config
+        config.port = Int(port)
+        config.retainSeconds = RemoteConfig.parseDuration(retain)
+        remoteStore.updateConfig(config)
+
+        // Start HTTP server if not already running on this port
+        if remoteHTTPServer == nil || !remoteHTTPServer!.isRunning {
+            let server = RemoteHTTPServer(store: remoteStore)
+            do {
+                try server.start(port: port)
+                remoteHTTPServer = server
+            } catch {
+                return JSONRPCResponse(
+                    error: JSONRPCError(code: -1, message: "Failed to start remote server: \(error)"),
+                    id: id)
+            }
+        }
+
+        // Generate a one-time pairing key
+        let (peerId, secretBase64) = remoteHTTPServer!.registerPairingKey()
+
+        // Build pairing URL using machine hostname
+        let hostname = ProcessInfo.processInfo.hostName
+        let pairingURL = "cua://\(hostname):\(port)?key=\(secretBase64)&peer=\(peerId)&v=1"
+
+        log("[remote] Pairing key generated for peer \(peerId)")
+        return JSONRPCResponse(result: AnyCodable([
+            "pairing_url": AnyCodable(pairingURL),
+            "peer_id":     AnyCodable(peerId),
+            "port":        AnyCodable(Int(port)),
+            "host":        AnyCodable(hostname),
+        ] as [String: AnyCodable]), id: id)
+    }
+
+    private func handleRemoteSnapshot(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        let peerId = params["peer"]?.value as? String
+
+        let sessions = remoteStore.allSessions()
+        guard !sessions.isEmpty else {
+            return JSONRPCResponse(
+                error: JSONRPCError(code: -2, message: "No paired peers"),
+                id: id)
+        }
+
+        // Resolve peer: explicit --peer arg, or the only/most-recent session
+        let targetPeerId: String
+        if let pid = peerId {
+            guard sessions.contains(where: { $0.peerId == pid }) else {
+                return JSONRPCResponse(
+                    error: JSONRPCError(code: -2, message: "Peer not found: \(pid)"),
+                    id: id)
+            }
+            targetPeerId = pid
+        } else {
+            targetPeerId = sessions.sorted { $0.lastUsed > $1.lastUsed }.first!.peerId
+        }
+
+        guard let record = remoteStore.latestSnapshot(forPeer: targetPeerId) else {
+            return JSONRPCResponse(
+                error: JSONRPCError(code: -3, message: "No snapshots for peer \(targetPeerId)"),
+                id: id)
+        }
+
+        return encodeRemoteRecord(record, id: id)
+    }
+
+    private func handleRemoteHistory(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        let peerId   = params["peer"]?.value  as? String
+        let sinceStr = params["since"]?.value as? String
+        let appFilter = params["app"]?.value  as? String
+
+        let sessions = remoteStore.allSessions()
+        guard !sessions.isEmpty else {
+            return JSONRPCResponse(
+                error: JSONRPCError(code: -2, message: "No paired peers"),
+                id: id)
+        }
+
+        let targetPeerId: String
+        if let pid = peerId {
+            guard sessions.contains(where: { $0.peerId == pid }) else {
+                return JSONRPCResponse(
+                    error: JSONRPCError(code: -2, message: "Peer not found: \(pid)"),
+                    id: id)
+            }
+            targetPeerId = pid
+        } else {
+            targetPeerId = sessions.sorted { $0.lastUsed > $1.lastUsed }.first!.peerId
+        }
+
+        let sinceDate: Date?
+        if let s = sinceStr {
+            let secs = RemoteConfig.parseDuration(s)
+            sinceDate = Date().addingTimeInterval(-TimeInterval(secs))
+        } else {
+            sinceDate = nil
+        }
+
+        let records = remoteStore.querySnapshots(forPeer: targetPeerId, since: sinceDate, app: appFilter)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let encoded = records.compactMap { record -> AnyCodable? in
+            guard let data = try? encoder.encode(record),
+                  let dict = try? JSONDecoder().decode([String: AnyCodable].self, from: data) else {
+                return nil
+            }
+            return AnyCodable(dict)
+        }
+        return JSONRPCResponse(result: AnyCodable([
+            "peer_id": AnyCodable(targetPeerId),
+            "count":   AnyCodable(encoded.count),
+            "records": AnyCodable(encoded),
+        ] as [String: AnyCodable]), id: id)
+    }
+
+    private func handleRemoteList(id: AnyCodable?) -> JSONRPCResponse {
+        let sessions = remoteStore.allSessions()
+        let fmt = ISO8601DateFormatter()
+        let peers: [AnyCodable] = sessions.map { s in
+            AnyCodable([
+                "peer_id":   AnyCodable(s.peerId),
+                "name":      AnyCodable(s.peerName),
+                "last_seen": AnyCodable(fmt.string(from: s.lastUsed)),
+                "status":    AnyCodable("active"),
+            ] as [String: AnyCodable])
+        }
+        return JSONRPCResponse(result: AnyCodable([
+            "peers": AnyCodable(peers),
+            "count": AnyCodable(peers.count),
+        ] as [String: AnyCodable]), id: id)
+    }
+
+    private func handleRemoteRevoke(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        let peerId = params["peer"]?.value as? String
+
+        if let pid = peerId {
+            remoteStore.removeSession(peerId: pid)
+            remoteStore.deleteSnapshots(forPeer: pid)
+            log("[remote] Revoked peer \(pid)")
+            return JSONRPCResponse(result: AnyCodable([
+                "revoked": AnyCodable(true),
+                "peer_id": AnyCodable(pid),
+            ] as [String: AnyCodable]), id: id)
+        }
+
+        // Revoke all peers
+        let all = remoteStore.allSessions()
+        for s in all {
+            remoteStore.removeSession(peerId: s.peerId)
+            remoteStore.deleteSnapshots(forPeer: s.peerId)
+        }
+        log("[remote] Revoked all \(all.count) peer(s)")
+        return JSONRPCResponse(result: AnyCodable([
+            "revoked": AnyCodable(true),
+            "count":   AnyCodable(all.count),
+        ] as [String: AnyCodable]), id: id)
+    }
+
+    // Encode a RemoteSnapshotRecord as a JSON-RPC result (snake_case keys for API consistency)
+    private func encodeRemoteRecord(_ record: RemoteSnapshotRecord, id: AnyCodable?) -> JSONRPCResponse {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        guard let data = try? encoder.encode(record),
+              let dict = try? JSONDecoder().decode([String: AnyCodable].self, from: data) else {
+            return JSONRPCResponse(error: .internalError, id: id)
+        }
+        return JSONRPCResponse(result: AnyCodable(dict), id: id)
     }
 }
