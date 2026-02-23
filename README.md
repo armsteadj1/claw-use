@@ -50,7 +50,6 @@ Fewer tool calls = fewer LLM round-trips = faster completion = lower cost.
 |-----------|---------------|-----------|
 | 🔒 Locked screen | Dead — browser tools need a display | Safari transport works via AppleScript |
 | 📱 Native apps (Notes, Calendar, Numbers) | No tool covers this | Full AX UI tree with refs and actions |
-| 👁️ Event-driven wake | Poll in a loop, burn tokens | **Sentinels** push events to your agent |
 | 🔄 Transport failure | Retry the same broken path | Auto-fallback: AX → Safari → CDP → AppleScript |
 | ⚡ One-shot interactions | Snapshot, parse, then act (3 steps) | `pipe` = snapshot + match + act in 1 call |
 
@@ -70,25 +69,6 @@ cua pipe safari click --match "Sign in"
 
 # All of this works with the screen locked 🔒
 ```
-
-## Sentinels
-
-cua doesn't just respond to commands — it watches.
-
-The **event bus** monitors app lifecycle, UI changes, screen state, and foreground switches. When something happens, it wakes your agent via webhook instead of your agent polling "did anything change?"
-
-```bash
-# Stream events as JSONL
-cua watch --app Safari --types value_changed,title_changed
-
-# Configure webhooks — your agent gets called when something needs attention:
-# - A build finishes in Xcode
-# - A dialog pops up asking for permission
-# - The screen unlocks and apps are visible again
-# - A file changes in Finder
-```
-
-Think of Sentinels as your agent's peripheral vision. Instead of burning tokens on polling loops, the daemon tells your agent when to look.
 
 Screenshot any app and feed it to a vision model. "What does the screen look like right now?"
 
@@ -111,7 +91,7 @@ cua runs a persistent daemon (`cuad`) that maintains connections to every app th
 - **AppleScript** — app scripting + Safari JS injection (works on locked screens 🔒)
 - **Screenshots** — CGWindowListCreateImage for visual capture
 
-The **self-healing router** picks the best transport per app and auto-falls back on failure. Snapshots are cached with stable refs. The event bus watches everything.
+The **self-healing router** picks the best transport per app and auto-falls back on failure. Snapshots are cached with stable refs.
 
 → Deep dive: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
@@ -156,8 +136,6 @@ cua is designed to be called from AI agent tool loops. The JSON output is struct
 - **Fuzzy matching** (`--match "Sign In"`) means your agent doesn't need exact selectors
 - **Semantic page types** (`login`, `search`, `article`, `table`) let your agent understand what it's looking at
 - **`pipe` command** combines snapshot + match + act in one round-trip (~200ms total)
-- **JSONL events** can drive reactive agent behavior (watch for changes, not poll)
-
 ### Example: OpenClaw Skill
 
 ```yaml
@@ -185,7 +163,7 @@ description: See and interact with any macOS app via cua CLI
 
 - [x] Phase 1: Daemon + UDS + persistent CDP + screen state
 - [x] Phase 2: Self-healing router + transport fallback
-- [x] Phase 3: Snapshot cache + event bus + watch stream
+- [x] Phase 3: Snapshot cache + event bus
 - [x] Phase 4: Safari browser control + semantic page analysis
 - [ ] Phase 5: Transport-aware enrichers + OCR fallback
 - [ ] Chrome DevTools integration (remote debugging)
