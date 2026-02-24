@@ -155,6 +155,9 @@ final class Router {
         let pid = params["pid"]?.value as? Int
         let depth = (params["depth"]?.value as? Int) ?? 50
         let noCache = params["no_cache"]?.value as? Bool ?? false
+        // stable_refs: enabled per-call via param OR globally via daemon config
+        let config = CUAConfig.load()
+        let stableRefs = (params["stable_refs"]?.value as? Bool ?? false) || (config.stableRefs ?? false)
 
         guard let runningApp = resolveApp(name: appName, pid: pid) else {
             return JSONRPCResponse(error: JSONRPCError(code: -2, message: "App not found"), id: id)
@@ -215,7 +218,7 @@ final class Router {
         if result.success, let data = result.data,
            let snapshotData = try? JSONOutput.encode(AnyCodable(data)),
            let snapshot = try? JSONDecoder().decode(AppSnapshot.self, from: snapshotData) {
-            let _ = snapshotCache.put(app: resolvedName, snapshot: snapshot, transport: result.transportUsed)
+            let _ = snapshotCache.put(app: resolvedName, snapshot: snapshot, transport: result.transportUsed, stableRefs: stableRefs)
         }
 
         if result.success {

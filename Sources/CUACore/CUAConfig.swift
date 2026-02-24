@@ -10,16 +10,20 @@ public struct CUAConfig: Codable {
     public let wakeEndpoint: String?
     public let processGroup: ProcessGroupConfig?
     public let eventFile: EventFileConfig?
+    /// When true, all snapshots use stable refs (AX identifier or role+label fingerprint).
+    /// Can also be enabled per-call via the `--stable-refs` CLI flag.
+    public let stableRefs: Bool?
 
     public init(gatewayUrl: String? = nil, gatewayToken: String? = nil, hooksToken: String? = nil,
                 wakeEndpoint: String? = nil, processGroup: ProcessGroupConfig? = nil,
-                eventFile: EventFileConfig? = nil) {
+                eventFile: EventFileConfig? = nil, stableRefs: Bool? = nil) {
         self.gatewayUrl = gatewayUrl
         self.gatewayToken = gatewayToken
         self.hooksToken = hooksToken
         self.wakeEndpoint = wakeEndpoint
         self.processGroup = processGroup
         self.eventFile = eventFile
+        self.stableRefs = stableRefs
     }
 
     enum CodingKeys: String, CodingKey {
@@ -29,6 +33,7 @@ public struct CUAConfig: Codable {
         case wakeEndpoint = "wake_endpoint"
         case processGroup = "process_group"
         case eventFile = "event_file"
+        case stableRefs = "stable_refs"
     }
 
     /// Default priority event types for the event file feature

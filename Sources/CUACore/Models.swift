@@ -191,17 +191,41 @@ public struct Element: Codable {
     public let ref: String
     public let role: String
     public let label: String?
+    /// AX accessibility identifier, used for stable ref tracking across snapshots.
+    /// Omitted from JSON output when nil.
+    public let identifier: String?
     public let value: AnyCodable?
     public let placeholder: String?
     public let enabled: Bool
     public let focused: Bool
     public let selected: Bool
     public let actions: [String]
+
     public init(ref: String, role: String, label: String?, value: AnyCodable?,
-                placeholder: String?, enabled: Bool, focused: Bool, selected: Bool, actions: [String]) {
-        self.ref = ref; self.role = role; self.label = label; self.value = value
-        self.placeholder = placeholder; self.enabled = enabled; self.focused = focused
-        self.selected = selected; self.actions = actions
+                placeholder: String?, enabled: Bool, focused: Bool, selected: Bool,
+                actions: [String], identifier: String? = nil) {
+        self.ref = ref; self.role = role; self.label = label; self.identifier = identifier
+        self.value = value; self.placeholder = placeholder; self.enabled = enabled
+        self.focused = focused; self.selected = selected; self.actions = actions
+    }
+
+    // Custom coding to omit `identifier` when nil (keeps JSON compact)
+    enum CodingKeys: String, CodingKey {
+        case ref, role, label, identifier, value, placeholder, enabled, focused, selected, actions
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(ref, forKey: .ref)
+        try c.encode(role, forKey: .role)
+        try c.encodeIfPresent(label, forKey: .label)
+        try c.encodeIfPresent(identifier, forKey: .identifier)
+        try c.encodeIfPresent(value, forKey: .value)
+        try c.encodeIfPresent(placeholder, forKey: .placeholder)
+        try c.encode(enabled, forKey: .enabled)
+        try c.encode(focused, forKey: .focused)
+        try c.encode(selected, forKey: .selected)
+        try c.encode(actions, forKey: .actions)
     }
 }
 
