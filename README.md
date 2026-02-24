@@ -1,8 +1,8 @@
 # cua
 
-Your agent is blind without this.
+You already have tools. These are better.
 
-cua gives AI agents eyes and hands on macOS — native apps, browsers, locked screens. One daemon, one CLI, every app.
+cua gives AI agents a faster, cheaper, and more capable interface to macOS — native apps, browsers, locked screens. One daemon, one CLI, every app.
 
 ```bash
 cua list
@@ -19,32 +19,15 @@ cua pipe safari click --match "Sign In"
 
 ---
 
-## The Problem
+## Why cua
 
-Agents running on macOS hit a wall fast.
+Your agent already has tools — browser automation, AppleScript, exec. cua wins on every dimension:
 
-They can't open Notes and read your to-dos. They can't fill a form in a native app. If the screen locks, everything dies. And when they do have browser access, they're making 3–5 tool calls where one would do — snapshot, parse, act, verify, check again.
-
-Every tool call is a round-trip to the LLM. Slow. Expensive. Fragile.
-
-**The specific gaps:**
-
-- Native apps (Notes, Calendar, Numbers, Xcode) — no tool covers them
-- Locked screen — browser automation needs a display; dies silently
-- One-shot interactions — always snapshot + parse + act instead of a single command
-- Transport failure — no fallback, just a crashed task
-
----
-
-## The Fix
-
-cua is a persistent daemon + CLI that lives on your Mac and gives your agent full access to everything running.
-
-- **See any native app** — full UI tree from macOS Accessibility APIs
-- **Interact with elements** — click, fill, toggle, select by ref or fuzzy match
-- **Locked screen? Still works** — Safari and AppleScript transports don't need a display
-- **One-shot `pipe` command** — snapshot + match + act in a single CLI call (~200ms)
-- **Token-efficient output** — compact format is 5x smaller than browser tool ARIA trees
+- **See other computers** — install cua on a user's Mac and run it from anywhere via SSH. A remote agent (in the cloud, on another machine) gets full structured UI access without VNC or screen sharing.
+- **5x cheaper** — compact snapshots are 577 bytes vs. 3,318 bytes for browser ARIA trees. Real savings at LLM token prices across a full task.
+- **5x faster** — persistent daemon, cached snapshots, no browser startup. Web snapshot: 235ms vs. ~1,200ms. One `pipe` call instead of snapshot + parse + act.
+- **Built for agents** — stable element refs (`e4`, `w2`), fuzzy matching, semantic page types, structured output designed for LLM consumption.
+- **One CLI, every app** — native apps, Electron apps (VS Code, Obsidian), browsers — and it all works with the screen locked.
 
 ---
 
@@ -110,7 +93,7 @@ cua pipe "Contacts" fill --match "Last Name" --value "Smith"
 cua pipe "Contacts" click --match "Done"
 ```
 
-Three calls, form filled. No web scraping, no browser driver.
+Three calls, form filled. Direct native access — no browser overhead, no extra dependencies.
 
 ---
 
