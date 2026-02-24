@@ -1329,25 +1329,7 @@ struct Pipe: ParsableCommand {
     }
 
     private func fuzzyScore(needle: String, element: Element, sectionLabel: String?) -> Int {
-        var score = 0
-        let label = (element.label ?? "").lowercased()
-        let role = element.role.lowercased()
-        let valStr: String = {
-            guard let val = element.value?.value else { return "" }
-            if let s = val as? String { return s }
-            return "\(val)"
-        }().lowercased()
-        let secLabel = (sectionLabel ?? "").lowercased()
-
-        if label == needle { score += 100 }
-        else if label.contains(needle) { score += 80 }
-        else if !label.isEmpty && needle.contains(label) { score += 40 }
-        if role.contains(needle) { score += 30 }
-        if valStr.contains(needle) { score += 20 }
-        if secLabel.contains(needle) { score += 10 }
-        if !element.actions.isEmpty && score > 0 { score += 5 }
-
-        return score
+        AXElementMatcher.fuzzyScore(needle: needle, element: element, sectionLabel: sectionLabel)
     }
 }
 
@@ -1440,17 +1422,17 @@ struct Wait: ParsableCommand {
     }
 }
 
-// MARK: - assert (#6)
+// MARK: - assert (#10)
 
 struct Assert: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Check if an element exists in an app's UI (exits 0 if found, 1 if not)"
+        abstract: "Boolean element check — exits 0 if found, 1 if not (use in test scripts)"
     )
 
     @Argument(help: "App name (partial match, case-insensitive)")
     var app: String?
 
-    @Option(name: .long, help: "Element text to search for")
+    @Option(name: .long, help: "Fuzzy match string for element label/role/value")
     var match: String
 
     @Option(name: .long, help: "App PID")
@@ -1458,6 +1440,9 @@ struct Assert: ParsableCommand {
 
     @Option(name: .long, help: "Output format (compact or json)")
     var format: String = "compact"
+
+    @Flag(name: .long, help: "Suppress output — pure exit code only")
+    var quiet: Bool = false
 
     func run() throws {
         guard AXBridge.checkAccessibilityPermission() else {
@@ -1473,33 +1458,48 @@ struct Assert: ParsableCommand {
         let enricher = Enricher()
         let refMap = RefMap()
         let snapshot = enricher.snapshot(app: runningApp, refMap: refMap)
-        let allElements = snapshot.content.sections.flatMap { $0.elements }
 
         let needle = match.lowercased()
-        let found = allElements.contains { el in
-            let label = (el.label ?? "").lowercased()
-            let valStr = (el.value?.value as? String ?? "").lowercased()
-            let role = el.role.lowercased()
-            return label.contains(needle) || valStr.contains(needle) || role.contains(needle)
+        var bestMatch: (ref: String, score: Int, label: String)? = nil
+
+        for section in snapshot.content.sections {
+            for element in section.elements {
+                let score = AXElementMatcher.fuzzyScore(needle: needle, element: element, sectionLabel: section.label)
+                if score > 0 {
+                    if bestMatch == nil || score > bestMatch!.score {
+                        bestMatch = (ref: element.ref, score: score, label: element.label ?? element.role)
+                    }
+                }
+            }
         }
 
-        if format == "json" {
-            let output: [String: AnyCodable] = [
-                "found": AnyCodable(found),
-                "match": AnyCodable(match),
-                "app": AnyCodable(snapshot.app),
-            ]
-            try JSONOutput.print(output, pretty: false)
-        } else {
-            if found {
-                print("assert: \"\(match)\" found in \(snapshot.app)")
+        let found = bestMatch != nil
+
+        if !quiet {
+            if format == "json" {
+                var output: [String: AnyCodable] = [
+                    "found": AnyCodable(found),
+                    "match": AnyCodable(match),
+                    "app": AnyCodable(snapshot.app),
+                ]
+                if let m = bestMatch {
+                    output["matched_ref"] = AnyCodable(m.ref)
+                    output["matched_label"] = AnyCodable(m.label)
+                    output["match_score"] = AnyCodable(m.score)
+                }
+                try JSONOutput.print(output, pretty: false)
             } else {
-                print("assert: \"\(match)\" NOT found in \(snapshot.app)")
+                if let m = bestMatch {
+                    print("✓ found \"\(match)\" [\(m.ref)]")
+                } else {
+                    print("✗ \"\(match)\" not found")
+                }
             }
         }
 
         if !found { throw ExitCode.failure }
     }
+
 }
 
 // MARK: - web
