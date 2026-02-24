@@ -241,6 +241,58 @@ final class Router {
     // MARK: - act (routed through transport layer with fallback)
 
     private func handleAct(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        // Coordinate-based click: --at x,y (no AX ref needed)
+        if let atParam = params["at"]?.value as? String {
+            let parts = atParam.split(separator: ",").compactMap {
+                Double($0.trimmingCharacters(in: .whitespaces))
+            }
+            guard parts.count == 2 else {
+                return JSONRPCResponse(
+                    error: JSONRPCError(code: -5, message: "--at requires x,y format (e.g. 150,350)"),
+                    id: id
+                )
+            }
+            let x = parts[0], y = parts[1]
+            let isRelative = params["relative"]?.value as? Bool ?? false
+
+            if isRelative {
+                let appName = params["app"]?.value as? String
+                let pid = params["pid"]?.value as? Int
+                guard let runningApp = resolveApp(name: appName, pid: pid) else {
+                    return JSONRPCResponse(error: JSONRPCError(code: -2, message: "App not found"), id: id)
+                }
+                let result = ActionExecutor.clickAtRelativeCoordinate(x: x, y: y, app: runningApp)
+                if !result.success {
+                    return JSONRPCResponse(
+                        error: JSONRPCError(code: -10, message: result.error ?? "Coordinate click failed"),
+                        id: id
+                    )
+                }
+                let data: [String: AnyCodable] = [
+                    "success": AnyCodable(true),
+                    "action": AnyCodable("click"),
+                    "at": AnyCodable(atParam),
+                    "relative": AnyCodable(true),
+                    "app": AnyCodable(runningApp.localizedName ?? "Unknown"),
+                ]
+                return JSONRPCResponse(result: AnyCodable(data), id: id)
+            } else {
+                let result = ActionExecutor.clickAtCoordinate(x: x, y: y)
+                if !result.success {
+                    return JSONRPCResponse(
+                        error: JSONRPCError(code: -10, message: result.error ?? "Coordinate click failed"),
+                        id: id
+                    )
+                }
+                let data: [String: AnyCodable] = [
+                    "success": AnyCodable(true),
+                    "action": AnyCodable("click"),
+                    "at": AnyCodable(atParam),
+                ]
+                return JSONRPCResponse(result: AnyCodable(data), id: id)
+            }
+        }
+
         let appName = params["app"]?.value as? String
         let pid = params["pid"]?.value as? Int
         let actionStr = params["action"]?.value as? String ?? ""
