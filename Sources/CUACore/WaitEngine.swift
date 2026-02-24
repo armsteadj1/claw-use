@@ -75,7 +75,7 @@ public enum WaitEngine {
 
     // MARK: - Fuzzy scoring (mirrors Pipe / Router.handlePipe)
 
-    static func fuzzyScore(needle: String, element: Element, sectionLabel: String?) -> Int {
+    public static func fuzzyScore(needle: String, element: Element, sectionLabel: String?) -> Int {
         var score = 0
         let label = (element.label ?? "").lowercased()
         let role = element.role.lowercased()

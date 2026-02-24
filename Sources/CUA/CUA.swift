@@ -1146,7 +1146,7 @@ struct Pipe: ParsableCommand {
             if verbose { params["verbose"] = AnyCodable(true) }
             let response = try callDaemon(method: "pipe", params: params)
             // In verbose mode, print extra match details to stderr before the normal output
-            if verbose, let dict = response as? [String: Any] {
+            if verbose, let dict = response.result?.value as? [String: Any] {
                 let label = dict["matched_label"] as? String ?? "?"
                 let conf = dict["match_confidence"] as? Double ?? 0
                 var msg = "matched \"\(label)\" (\(String(format: "%.2f", conf)))"
