@@ -79,6 +79,42 @@ private func printFormattedResponse(
     }
 }
 
+// MARK: - Remote routing helpers
+
+/// Returns the remote target name from an explicit flag or CUA_REMOTE env var.
+private func resolveRemoteName(explicit: String?) -> String? {
+    explicit ?? ProcessInfo.processInfo.environment["CUA_REMOTE"]
+}
+
+/// Call a named remote target via RemoteClient and print the result JSON.
+/// Returns true on success. On error, prints to stderr and returns false.
+@discardableResult
+private func callRemoteAndPrint(
+    targetName: String,
+    method: String,
+    params: [String: Any],
+    pretty: Bool = false
+) throws -> Bool {
+    let client = try RemoteClient.forTarget(name: targetName)
+    let data = try client.rpc(method: method, params: params)
+
+    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        fputs("Error: invalid response from remote\n", stderr)
+        return false
+    }
+
+    if let err = json["error"] as? [String: Any], let msg = err["message"] as? String {
+        fputs("Error: \(msg)\n", stderr)
+        return false
+    }
+
+    let result = json["result"] ?? [String: Any]()
+    let opts: JSONSerialization.WritingOptions = pretty ? [.prettyPrinted, .sortedKeys] : [.sortedKeys]
+    let outData = try JSONSerialization.data(withJSONObject: result, options: opts)
+    print(String(data: outData, encoding: .utf8)!)
+    return true
+}
+
 // MARK: - daemon
 
 struct Daemon: ParsableCommand {
@@ -273,7 +309,14 @@ struct Status: ParsableCommand {
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
+    @Option(name: .long, help: "Remote target name from remote_targets config (e.g. james-laptop)")
+    var remote: String?
+
     func run() throws {
+        if let name = resolveRemoteName(explicit: remote) {
+            try callRemoteAndPrint(targetName: name, method: "status", params: [:], pretty: pretty)
+            return
+        }
         let response = try callDaemon(method: "status")
         try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
             CompactFormatter.formatStatus(data: dict)
@@ -294,7 +337,14 @@ struct List: ParsableCommand {
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
+    @Option(name: .long, help: "Remote target name from remote_targets config (e.g. james-laptop)")
+    var remote: String?
+
     func run() throws {
+        if let name = resolveRemoteName(explicit: remote) {
+            try callRemoteAndPrint(targetName: name, method: "list", params: [:], pretty: pretty)
+            return
+        }
         // Try daemon first
         do {
             let response = try callDaemon(method: "list")
@@ -405,7 +455,18 @@ struct Snapshot: ParsableCommand {
     @Flag(name: .long, help: "Enable stable refs: elements keep the same ref across consecutive snapshots (tracked by AX identifier or role+label fingerprint; disappeared refs tombstoned for 60 s)")
     var stableRefs: Bool = false
 
+    @Option(name: .long, help: "Remote target name from remote_targets config (e.g. james-laptop)")
+    var remote: String?
+
     func run() throws {
+        if let name = resolveRemoteName(explicit: remote) {
+            var params: [String: Any] = ["depth": depth]
+            if let a = app { params["app"] = a }
+            if let p = pid { params["pid"] = Int(p) }
+            if stableRefs { params["stable_refs"] = true }
+            try callRemoteAndPrint(targetName: name, method: "snapshot", params: params, pretty: pretty)
+            return
+        }
         // Try daemon
         do {
             var params: [String: AnyCodable] = [:]
@@ -559,7 +620,23 @@ struct Act: ParsableCommand {
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
+    @Option(name: .long, help: "Remote target name from remote_targets config (e.g. james-laptop)")
+    var remote: String?
+
     func run() throws {
+        if let name = resolveRemoteName(explicit: remote) {
+            var params: [String: Any] = ["action": action]
+            if let a = app    { params["app"] = a }
+            if let p = pid    { params["pid"] = Int(p) }
+            if let r = ref    { params["ref"] = r }
+            if let v = value  { params["value"] = v }
+            if let e = expr   { params["expr"] = e }
+            if let coords = at { params["at"] = coords }
+            params["port"] = port
+            params["timeout"] = timeout
+            try callRemoteAndPrint(targetName: name, method: "act", params: params, pretty: pretty)
+            return
+        }
         // Handle coordinate click (#2): try daemon first, then direct fallback
         if let coords = at {
             let parts = coords.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
@@ -1138,6 +1215,9 @@ struct Pipe: ParsableCommand {
     @Flag(name: .long, help: "Show match details and runner-up matches")
     var verbose: Bool = false
 
+    @Option(name: .long, help: "Remote target name from remote_targets config (e.g. james-laptop)")
+    var remote: String?
+
     /// Normalize a raw fuzzy score to a 0-1 confidence value.
     private static func normalizeScore(_ raw: Int) -> Double {
         min(Double(raw) / 100.0, 1.0)
@@ -1147,6 +1227,17 @@ struct Pipe: ParsableCommand {
     private static let ambiguityDelta: Double = 0.1
 
     func run() throws {
+        if let name = resolveRemoteName(explicit: remote) {
+            var params: [String: Any] = ["action": action, "port": port, "timeout": timeout]
+            if let a = app    { params["app"] = a }
+            if let p = pid    { params["pid"] = Int(p) }
+            if let m = match  { params["match"] = m }
+            if let v = value  { params["value"] = v }
+            if let e = expr   { params["expr"] = e }
+            if strict { params["strict"] = true }
+            try callRemoteAndPrint(targetName: name, method: "pipe", params: params, pretty: pretty)
+            return
+        }
         // Try daemon
         do {
             var params: [String: AnyCodable] = [
@@ -1784,7 +1875,16 @@ struct Screenshot: ParsableCommand {
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
+    @Option(name: .long, help: "Remote target name from remote_targets config (e.g. james-laptop)")
+    var remote: String?
+
     func run() throws {
+        if let name = resolveRemoteName(explicit: remote) {
+            var params: [String: Any] = ["app": app]
+            if let o = output { params["output"] = o }
+            try callRemoteAndPrint(targetName: name, method: "screenshot", params: params, pretty: pretty)
+            return
+        }
         // Try daemon first
         do {
             var params: [String: AnyCodable] = ["app": AnyCodable(app)]
@@ -2166,8 +2266,9 @@ struct MilestonesValidate: ParsableCommand {
 struct RemoteCmd: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "remote",
-        abstract: "Push-based remote AX visibility (read-only, laptop → agent machine)",
+        abstract: "Remote access and push-based AX visibility",
         subcommands: [
+            RemoteSetup.self,
             RemoteAccept.self,
             RemoteSend.self,
             RemoteStop.self,
@@ -2632,4 +2733,51 @@ struct RemoteSenderDaemon: ParsableCommand {
         }
     }
 
+}
+
+// MARK: - remote setup
+
+struct RemoteSetup: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "setup",
+        abstract: "Generate config snippets and a shared secret for Tailscale remote access"
+    )
+
+    func run() throws {
+        // Generate 32-byte random hex secret
+        var bytes = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, 32, &bytes)
+        let secret = bytes.map { String(format: "%02x", $0) }.joined()
+
+        // Detect local Tailscale IP
+        let tsIP = tailscaleIP() ?? "<tailscale-ip>"
+
+        print("""
+        === On the Mac being observed (~/.cua/config.json) ===
+        {
+          "remote": {
+            "enabled": true,
+            "port": 4567,
+            "bind": "tailscale",
+            "secret": "\(secret)",
+            "token_ttl": 3600,
+            "blocked_apps": ["1Password", "Keychain Access", "Messages", "Signal"]
+          }
+        }
+
+        === On the agent machine (~/.cua/config.json) ===
+        {
+          "remote_targets": {
+            "this-machine": {
+              "url": "http://\(tsIP):4567",
+              "secret": "\(secret)"
+            }
+          }
+        }
+
+        Tailscale IP of this machine: \(tsIP)
+        Run: cua daemon restart  (on the observed Mac, after editing config)
+        Then: cua --remote this-machine status  (from the agent machine)
+        """)
+    }
 }
