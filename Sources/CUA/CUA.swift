@@ -11,7 +11,7 @@ struct CUA: ParsableCommand {
         commandName: "cua",
         abstract: "Allowing claws to make better use of any application.",
         version: "0.3.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Wait.self, Assert.self, Daemon.self, Status.self, Web.self, Screenshot.self, ProcessCmd.self, MilestonesCmd.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Wait.self, Assert.self, Daemon.self, Status.self, Web.self, Screenshot.self, ProcessCmd.self, MilestonesCmd.self, RemoteCmd.self, RemoteSenderDaemon.self]
     )
 }
 
@@ -2183,4 +2183,477 @@ struct MilestonesValidate: ParsableCommand {
 
         if !valid { throw ExitCode.failure }
     }
+}
+
+// MARK: - remote
+
+struct RemoteCmd: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "remote",
+        abstract: "Push-based remote AX visibility (read-only, laptop → agent machine)",
+        subcommands: [
+            RemoteAccept.self,
+            RemoteSend.self,
+            RemoteStop.self,
+            RemoteRevoke.self,
+            RemoteSnapshot.self,
+            RemoteHistory.self,
+            RemoteList.self,
+        ]
+    )
+}
+
+// MARK: remote accept
+
+struct RemoteAccept: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "accept",
+        abstract: "Start receiving AX snapshots from a paired laptop"
+    )
+
+    @Option(name: .long, help: "HTTP port to listen on")
+    var port: Int = 9876
+
+    @Option(name: .long, help: "Snapshot retention duration (e.g. 1d, 7d, 1h)")
+    var retain: String = "1d"
+
+    func run() throws {
+        let params: [String: AnyCodable] = [
+            "port":   AnyCodable(port),
+            "retain": AnyCodable(retain),
+        ]
+        let response = try callDaemon(method: "remote.accept", params: params)
+        if let error = response.error {
+            fputs("Error: \(error.message)\n", stderr)
+            throw ExitCode.failure
+        }
+        guard let result = response.result,
+              let dict = result.value as? [String: AnyCodable] else {
+            fputs("Error: unexpected response\n", stderr)
+            throw ExitCode.failure
+        }
+        let url   = dict["pairing_url"]?.value as? String ?? ""
+        let peerID = dict["peer_id"]?.value as? String ?? ""
+        print("Remote accept ready. Run on your laptop:")
+        print("")
+        print("  cua remote send '\(url)'")
+        print("")
+        print("Pairing URL : \(url)")
+        print("Peer ID     : \(peerID)")
+        print("Port        : \(port)")
+        print("Retention   : \(retain)")
+    }
+}
+
+// MARK: remote send
+
+struct RemoteSend: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "send",
+        abstract: "Pair with a receiver and start pushing AX snapshots in the background"
+    )
+
+    @Argument(help: "Pairing URL printed by `cua remote accept`")
+    var url: String
+
+    @Option(name: .long, help: "Push interval (e.g. 5s, 10s)")
+    var interval: String = "5s"
+
+    func run() throws {
+        // Parse cua:// URL by rewriting scheme so URLComponents handles it
+        guard let components = URLComponents(string: url.replacingOccurrences(of: "cua://", with: "http://")),
+              let host = components.host,
+              let key = components.queryItems?.first(where: { $0.name == "key" })?.value,
+              let peerId = components.queryItems?.first(where: { $0.name == "peer" })?.value
+        else {
+            fputs("Error: invalid pairing URL (expected cua://<host>:<port>?key=...&peer=...&v=1)\n", stderr)
+            throw ExitCode.failure
+        }
+        let port = components.port ?? 9876
+        let intervalSeconds = RemoteConfig.parseDuration(interval)
+
+        // Decode HMAC secret
+        guard let secretData = Data(base64Encoded: key) else {
+            fputs("Error: invalid base64 key in pairing URL\n", stderr)
+            throw ExitCode.failure
+        }
+
+        // Compute HMAC for handshake: HMAC-SHA256(peerId:timestamp, secret)
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let message   = "\(peerId):\(timestamp)"
+        let hmacHex   = RemoteCrypto.hmacSHA256(message: message, secret: secretData)
+        let peerName  = ProcessInfo.processInfo.hostName
+
+        let handshakeBody: [String: Any] = [
+            "peer_id":   peerId,
+            "peer_name": peerName,
+            "timestamp": timestamp,
+            "hmac":      hmacHex,
+        ]
+
+        // POST /remote-handshake
+        guard let sessionToken = performRemoteHandshake(host: host, port: port, body: handshakeBody) else {
+            fputs("Error: handshake failed — check the pairing URL and that the receiver is running\n", stderr)
+            throw ExitCode.failure
+        }
+
+        // Save sender state for the background daemon
+        let stateDir = NSHomeDirectory() + "/.cua/remote"
+        try? FileManager.default.createDirectory(atPath: stateDir, withIntermediateDirectories: true)
+        let statePath = stateDir + "/sender.json"
+        let state = RemoteSenderState(
+            host: host, port: port, peerId: peerId,
+            sessionToken: sessionToken, intervalSeconds: intervalSeconds
+        )
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(state) {
+            try? data.write(to: URL(fileURLWithPath: statePath))
+        }
+
+        // Stop any existing sender daemon
+        let pidPath = stateDir + "/sender.pid"
+        if let pidStr = try? String(contentsOfFile: pidPath, encoding: .utf8),
+           let pid = Int32(pidStr.trimmingCharacters(in: .whitespacesAndNewlines)),
+           kill(pid, 0) == 0 {
+            kill(pid, SIGTERM)
+        }
+
+        // Fork background sender daemon (re-exec this binary with hidden subcommand)
+        let cuaPath = CommandLine.arguments[0]
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cuaPath)
+        process.arguments = ["_remote-sender-daemon"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardInput  = FileHandle.nullDevice
+        process.standardError  = FileHandle.nullDevice
+        try process.run()
+
+        print("{\"status\":\"sending\",\"peer_id\":\"\(peerId)\",\"host\":\"\(host)\",\"port\":\(port),\"interval\":\(intervalSeconds)}")
+    }
+}
+
+/// Perform the HMAC handshake against the receiver's HTTP server.
+/// Returns the session token on success, nil on failure.
+private func performRemoteHandshake(host: String, port: Int, body: [String: Any]) -> String? {
+    guard let bodyData = try? JSONSerialization.data(withJSONObject: body),
+          let url = URL(string: "http://\(host):\(port)/remote-handshake") else { return nil }
+
+    var request = URLRequest(url: url, timeoutInterval: 10)
+    request.httpMethod  = "POST"
+    request.httpBody    = bodyData
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+    let sem = DispatchSemaphore(value: 0)
+    var result: String?
+    URLSession.shared.dataTask(with: request) { data, response, _ in
+        defer { sem.signal() }
+        guard let data = data,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let token = json["session_token"] as? String else { return }
+        result = token
+    }.resume()
+    sem.wait()
+    return result
+}
+
+/// Push a RemoteSnapshotRecord to the receiver's HTTP ingest endpoint.
+private func pushRemoteSnapshot(_ record: RemoteSnapshotRecord, host: String, port: Int, sessionToken: String) -> Bool {
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    guard let bodyData = try? encoder.encode(record),
+          let url = URL(string: "http://\(host):\(port)/remote-ingest") else { return false }
+
+    var request = URLRequest(url: url, timeoutInterval: 10)
+    request.httpMethod  = "POST"
+    request.httpBody    = bodyData
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+
+    let sem = DispatchSemaphore(value: 0)
+    var success = false
+    URLSession.shared.dataTask(with: request) { data, response, error in
+        defer { sem.signal() }
+        if let http = response as? HTTPURLResponse, http.statusCode == 200 { success = true }
+    }.resume()
+    sem.wait()
+    return success
+}
+
+// MARK: remote stop
+
+struct RemoteStop: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "stop",
+        abstract: "Stop the background sender daemon"
+    )
+
+    func run() throws {
+        let pidPath = NSHomeDirectory() + "/.cua/remote/sender.pid"
+        guard let pidStr = try? String(contentsOfFile: pidPath, encoding: .utf8),
+              let pid = Int32(pidStr.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            print("{\"status\":\"not_running\"}")
+            return
+        }
+        if kill(pid, 0) != 0 {
+            try? FileManager.default.removeItem(atPath: pidPath)
+            print("{\"status\":\"not_running\"}")
+            return
+        }
+        kill(pid, SIGTERM)
+        // Brief wait
+        for _ in 0..<10 {
+            Thread.sleep(forTimeInterval: 0.1)
+            if kill(pid, 0) != 0 { break }
+        }
+        try? FileManager.default.removeItem(atPath: pidPath)
+        print("{\"status\":\"stopped\",\"pid\":\(pid)}")
+    }
+}
+
+// MARK: remote revoke
+
+struct RemoteRevoke: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "revoke",
+        abstract: "Revoke pairing and delete snapshots for a peer (receiver side)"
+    )
+
+    @Option(name: .long, help: "Peer ID to revoke (omit to revoke all)")
+    var peer: String?
+
+    func run() throws {
+        var params: [String: AnyCodable] = [:]
+        if let p = peer { params["peer"] = AnyCodable(p) }
+        let response = try callDaemon(method: "remote.revoke", params: params)
+        if let error = response.error {
+            fputs("Error: \(error.message)\n", stderr)
+            throw ExitCode.failure
+        }
+        guard let result = response.result else { print("{}"); return }
+        let enc = JSONOutput.encoder
+        let data = try enc.encode(result)
+        print(String(data: data, encoding: .utf8)!)
+    }
+}
+
+// MARK: remote snapshot
+
+struct RemoteSnapshot: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "snapshot",
+        abstract: "Show the latest AX snapshot from a paired peer (receiver side)"
+    )
+
+    @Option(name: .long, help: "Peer ID (defaults to most-recently-seen peer)")
+    var peer: String?
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        var params: [String: AnyCodable] = [:]
+        if let p = peer { params["peer"] = AnyCodable(p) }
+        let response = try callDaemon(method: "remote.snapshot", params: params)
+        try printResponse(response, pretty: pretty)
+    }
+}
+
+// MARK: remote history
+
+struct RemoteHistory: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "history",
+        abstract: "Query rolling snapshot history from a paired peer (receiver side)"
+    )
+
+    @Option(name: .long, help: "Peer ID (defaults to most-recently-seen peer)")
+    var peer: String?
+
+    @Option(name: .long, help: "Show snapshots from the last N (e.g. 1h, 30m)")
+    var since: String?
+
+    @Option(name: .long, help: "Filter to a specific app name")
+    var app: String?
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        var params: [String: AnyCodable] = [:]
+        if let p = peer  { params["peer"]  = AnyCodable(p) }
+        if let s = since { params["since"] = AnyCodable(s) }
+        if let a = app   { params["app"]   = AnyCodable(a) }
+        let response = try callDaemon(method: "remote.history", params: params)
+        try printResponse(response, pretty: pretty)
+    }
+}
+
+// MARK: remote list
+
+struct RemoteList: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "list",
+        abstract: "List all paired peers with last-seen timestamp (receiver side)"
+    )
+
+    @Flag(name: .long, help: "Pretty print JSON output")
+    var pretty: Bool = false
+
+    func run() throws {
+        let response = try callDaemon(method: "remote.list")
+        if let error = response.error {
+            fputs("Error: \(error.message)\n", stderr)
+            throw ExitCode.failure
+        }
+        guard let result = response.result,
+              let dict = result.value as? [String: AnyCodable],
+              let peers = dict["peers"]?.value as? [AnyCodable] else {
+            print("No paired peers.")
+            return
+        }
+        if pretty {
+            try printResponse(response, pretty: true)
+            return
+        }
+        if peers.isEmpty {
+            print("No paired peers.")
+            return
+        }
+        print("Paired Peers (\(peers.count))")
+        print("──────────────────────────────────────────")
+        for peer in peers {
+            guard let p = peer.value as? [String: AnyCodable] else { continue }
+            let id       = p["peer_id"]?.value  as? String ?? "?"
+            let name     = p["name"]?.value     as? String ?? "?"
+            let lastSeen = p["last_seen"]?.value as? String ?? "?"
+            let idShort  = String(id.prefix(8))
+            print("  \(name.padding(toLength: 20, withPad: " ", startingAt: 0)) \(idShort)  last: \(lastSeen)")
+        }
+    }
+}
+
+// MARK: - remote sender daemon (hidden, forked by `cua remote send`)
+
+struct RemoteSenderDaemon: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "_remote-sender-daemon",
+        shouldDisplay: false
+    )
+
+    // Hard-blocked bundle IDs — no snapshot taken for these apps (delegated to RemoteScrubber)
+    private static var blockedBundleIds: Set<String> { RemoteScrubber.blockedBundleIds }
+
+    func run() throws {
+        let stateDir  = NSHomeDirectory() + "/.cua/remote"
+        let statePath = stateDir + "/sender.json"
+        let pidPath   = stateDir + "/sender.pid"
+        let logPath   = stateDir + "/sender.log"
+
+        // Load saved pairing state
+        let decoder = JSONDecoder()
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: statePath)),
+              let state = try? decoder.decode(RemoteSenderState.self, from: data) else {
+            fputs("Error: no sender state at \(statePath)\n", stderr)
+            throw ExitCode.failure
+        }
+
+        // Write PID file
+        let myPID = ProcessInfo.processInfo.processIdentifier
+        try? "\(myPID)".write(toFile: pidPath, atomically: true, encoding: .utf8)
+
+        // Open log file
+        if !FileManager.default.fileExists(atPath: logPath) {
+            FileManager.default.createFile(atPath: logPath, contents: nil)
+        }
+        guard let logHandle = FileHandle(forWritingAtPath: logPath) else {
+            fputs("Error: cannot open log at \(logPath)\n", stderr)
+            throw ExitCode.failure
+        }
+
+        func slog(_ msg: String) {
+            let ts   = ISO8601DateFormatter().string(from: Date())
+            let line = "[\(ts)] \(msg)\n"
+            logHandle.seekToEndOfFile()
+            logHandle.write(Data(line.utf8))
+        }
+
+        slog("Sender daemon started — peer=\(state.peerId) host=\(state.host):\(state.port) interval=\(state.intervalSeconds)s")
+
+        var retryDelay = TimeInterval(state.intervalSeconds)
+        let peerName   = ProcessInfo.processInfo.hostName
+
+        while true {
+            do {
+                // Get running app list from local cuad
+                var appList: [String] = []
+                if let listResp = try? DaemonClient.call(method: "list"),
+                   let arr = listResp.result?.value as? [AnyCodable] {
+                    appList = arr.compactMap { item -> String? in
+                        guard let d = item.value as? [String: AnyCodable] else { return nil }
+                        let name     = d["name"]?.value      as? String ?? ""
+                        let bundleId = (d["bundle_id"]?.value as? String ?? "").lowercased()
+                        if RemoteSenderDaemon.blockedBundleIds.contains(bundleId) { return nil }
+                        return name
+                    }
+                }
+
+                // Determine frontmost app
+                var frontmostApp: (name: String, bundleId: String)?
+                if let front = NSWorkspace.shared.frontmostApplication {
+                    let bid = (front.bundleIdentifier ?? "").lowercased()
+                    if !RemoteSenderDaemon.blockedBundleIds.contains(bid) {
+                        frontmostApp = (front.localizedName ?? front.bundleIdentifier ?? "", bid)
+                    }
+                }
+
+                guard let activeApp = frontmostApp, !activeApp.name.isEmpty else {
+                    Thread.sleep(forTimeInterval: TimeInterval(state.intervalSeconds))
+                    continue
+                }
+
+                // Get snapshot from local cuad
+                let snapResp = try DaemonClient.call(
+                    method: "snapshot",
+                    params: ["app": AnyCodable(activeApp.name), "no_cache": AnyCodable(true)]
+                )
+
+                if let snapResult = snapResp.result {
+                    let snapDecoder = JSONDecoder()
+                    snapDecoder.keyDecodingStrategy = .convertFromSnakeCase
+                    if let snapData = try? JSONOutput.encode(snapResult),
+                       let snapshot = try? snapDecoder.decode(AppSnapshot.self, from: snapData) {
+
+                        let scrubbed = RemoteScrubber.scrub(snapshot)
+                        let record   = RemoteSnapshotRecord(
+                            timestamp: Date(),
+                            peerId:    state.peerId,
+                            peerName:  peerName,
+                            snapshot:  scrubbed,
+                            appList:   appList
+                        )
+
+                        let ok = pushRemoteSnapshot(
+                            record,
+                            host: state.host,
+                            port: state.port,
+                            sessionToken: state.sessionToken
+                        )
+                        if ok {
+                            retryDelay = TimeInterval(state.intervalSeconds)
+                            slog("Pushed snapshot: app=\(activeApp.name)")
+                        } else {
+                            retryDelay = min(retryDelay * 2, 30)
+                            slog("Push failed — retry in \(Int(retryDelay))s")
+                        }
+                    }
+                }
+            } catch {
+                retryDelay = min(retryDelay * 2, 30)
+                slog("Error: \(error) — retry in \(Int(retryDelay))s")
+            }
+
+            Thread.sleep(forTimeInterval: retryDelay)
+        }
+    }
+
 }
