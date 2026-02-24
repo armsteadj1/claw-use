@@ -617,13 +617,14 @@ struct Act: ParsableCommand {
                 throw ExitCode.failure
             }
             let result = ActionExecutor.selectRowByIndex(index: rowIndex, app: runningApp)
-            let output: [String: AnyCodable] = [
+            var output: [String: AnyCodable] = [
                 "success": AnyCodable(result.success),
                 "app": AnyCodable(runningApp.localizedName ?? "Unknown"),
                 "action": AnyCodable("select-row"),
                 "index": AnyCodable(rowIndex),
                 "error": AnyCodable(result.error as Any),
             ]
+            if let label = result.label { output["label"] = AnyCodable(label) }
             if format == "compact" {
                 print(CompactFormatter.formatActResult(data: output))
             } else {

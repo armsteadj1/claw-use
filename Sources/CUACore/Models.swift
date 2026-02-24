@@ -276,8 +276,9 @@ public struct ActionResultOutput: Codable {
     public let success: Bool
     public let error: String?
     public let snapshot: AppSnapshot?
-    public init(success: Bool, error: String?, snapshot: AppSnapshot?) {
-        self.success = success; self.error = error; self.snapshot = snapshot
+    public let label: String?
+    public init(success: Bool, error: String?, snapshot: AppSnapshot?, label: String? = nil) {
+        self.success = success; self.error = error; self.snapshot = snapshot; self.label = label
     }
 }
 
