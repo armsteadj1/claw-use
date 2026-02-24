@@ -403,29 +403,7 @@ final class Router {
             }
         }
 
-        let needle = matchStr.lowercased()
-        var allMatches: [(ref: String, score: Int, label: String)] = []
-
-        for section in snapshot.content.sections {
-            for element in section.elements {
-                let score = fuzzyScore(needle: needle, element: element, sectionLabel: section.label)
-                if score > 0 {
-                    allMatches.append((ref: element.ref, score: score, label: element.label ?? element.role))
-                }
-            }
-        }
-
-        for inferredAction in snapshot.actions {
-            if let ref = inferredAction.ref {
-                let haystack = "\(inferredAction.name) \(inferredAction.description)".lowercased()
-                if haystack.contains(needle) {
-                    allMatches.append((ref: ref, score: 50, label: inferredAction.name))
-                }
-            }
-        }
-
-        // Sort by score descending
-        allMatches.sort { $0.score > $1.score }
+        let allMatches = ElementMatcher.matchElements(needle: matchStr, in: snapshot)
 
         guard let matched = allMatches.first else {
             let available = snapshot.content.sections.flatMap { $0.elements }
@@ -1015,30 +993,6 @@ final class Router {
             error: JSONRPCError(code: -10, message: result.error ?? "Transport execution failed"),
             id: id
         )
-    }
-
-    private func fuzzyScore(needle: String, element: Element, sectionLabel: String?) -> Int {
-        var score = 0
-        let label = (element.label ?? "").lowercased()
-        let role = element.role.lowercased()
-        let valStr = stringValue(element.value).lowercased()
-        let secLabel = (sectionLabel ?? "").lowercased()
-
-        if label == needle { score += 100 }
-        else if label.contains(needle) { score += 80 }
-        else if !label.isEmpty && needle.contains(label) { score += 40 }
-        if role.contains(needle) { score += 30 }
-        if valStr.contains(needle) { score += 20 }
-        if secLabel.contains(needle) { score += 10 }
-        if !element.actions.isEmpty && score > 0 { score += 5 }
-
-        return score
-    }
-
-    private func stringValue(_ v: AnyCodable?) -> String {
-        guard let val = v?.value else { return "" }
-        if let s = val as? String { return s }
-        return "\(val)"
     }
 
     private func convertToAnyCodable(_ value: Any) -> AnyCodable {

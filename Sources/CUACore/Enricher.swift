@@ -471,6 +471,69 @@ public struct Grouper {
     }
 }
 
+// MARK: - Element Matching
+
+/// Fuzzy element matching shared by `pipe --match` in both the CLI and daemon paths.
+///
+/// Centralising the matching logic here guarantees that any element visible in a
+/// `snapshot` output can always be found by `pipe --match` with the same needle —
+/// the two commands use the exact same scoring function and enumeration.
+public struct ElementMatcher {
+
+    /// Fuzzy score for a single element against a pre-lowercased needle.
+    /// Returns 0 when the element doesn't match at all.
+    public static func fuzzyScore(needle: String, element: Element, sectionLabel: String?) -> Int {
+        var score = 0
+        let label = (element.label ?? "").lowercased()
+        let role = element.role.lowercased()
+        let valStr: String = {
+            guard let val = element.value?.value else { return "" }
+            if let s = val as? String { return s }
+            return "\(val)"
+        }().lowercased()
+        let secLabel = (sectionLabel ?? "").lowercased()
+
+        if label == needle { score += 100 }
+        else if label.contains(needle) { score += 80 }
+        else if !label.isEmpty && needle.contains(label) { score += 40 }
+        if role.contains(needle) { score += 30 }
+        if valStr.contains(needle) { score += 20 }
+        if secLabel.contains(needle) { score += 10 }
+        if !element.actions.isEmpty && score > 0 { score += 5 }
+
+        return score
+    }
+
+    /// Search all elements in a snapshot for the given needle (case-insensitive).
+    /// Includes both section elements and inferred actions.
+    /// Returns candidates sorted by score descending.
+    public static func matchElements(needle rawNeedle: String, in snapshot: AppSnapshot) -> [(ref: String, score: Int, label: String)] {
+        let needle = rawNeedle.lowercased()
+        var allMatches: [(ref: String, score: Int, label: String)] = []
+
+        for section in snapshot.content.sections {
+            for element in section.elements {
+                let score = fuzzyScore(needle: needle, element: element, sectionLabel: section.label)
+                if score > 0 {
+                    allMatches.append((ref: element.ref, score: score, label: element.label ?? element.role))
+                }
+            }
+        }
+
+        for inferredAction in snapshot.actions {
+            if let ref = inferredAction.ref {
+                let haystack = "\(inferredAction.name) \(inferredAction.description)".lowercased()
+                if haystack.contains(needle) {
+                    allMatches.append((ref: ref, score: 50, label: inferredAction.name))
+                }
+            }
+        }
+
+        allMatches.sort { $0.score > $1.score }
+        return allMatches
+    }
+}
+
 // MARK: - Enhancer Registry
 
 public struct EnhancerRegistry {

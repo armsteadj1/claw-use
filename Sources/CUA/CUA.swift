@@ -1215,29 +1215,7 @@ struct Pipe: ParsableCommand {
             throw ExitCode.failure
         }
 
-        let needle = matchStr.lowercased()
-        var allMatches: [(ref: String, score: Int, label: String)] = []
-
-        for section in snapshot.content.sections {
-            for element in section.elements {
-                let score = fuzzyScore(needle: needle, element: element, sectionLabel: section.label)
-                if score > 0 {
-                    allMatches.append((ref: element.ref, score: score, label: element.label ?? element.role))
-                }
-            }
-        }
-
-        for inferredAction in snapshot.actions {
-            if let ref = inferredAction.ref {
-                let haystack = "\(inferredAction.name) \(inferredAction.description)".lowercased()
-                if haystack.contains(needle) {
-                    allMatches.append((ref: ref, score: 50, label: inferredAction.name))
-                }
-            }
-        }
-
-        // Sort by score descending
-        allMatches.sort { $0.score > $1.score }
+        let allMatches = ElementMatcher.matchElements(needle: matchStr, in: snapshot)
 
         guard let matched = allMatches.first else {
             let output: [String: AnyCodable] = [
