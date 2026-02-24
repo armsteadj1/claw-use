@@ -560,7 +560,7 @@ struct Act: ParsableCommand {
     var pretty: Bool = false
 
     func run() throws {
-        // Handle coordinate click (#2)
+        // Handle coordinate click (#2): try daemon first, then direct fallback
         if let coords = at {
             let parts = coords.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
             guard parts.count == 2 else {
@@ -569,6 +569,23 @@ struct Act: ParsableCommand {
             }
             let x = parts[0], y = parts[1]
 
+            // Try daemon first
+            do {
+                var params: [String: AnyCodable] = [
+                    "action": AnyCodable("click"),
+                    "at": AnyCodable(coords),
+                ]
+                if let app = app { params["app"] = AnyCodable(app) }
+                if let pid = pid { params["pid"] = AnyCodable(Int(pid)) }
+                if relative { params["relative"] = AnyCodable(true) }
+                let response = try callDaemon(method: "act", params: params)
+                try printFormattedResponse(response, format: format, pretty: pretty) { dict, _ in
+                    CompactFormatter.formatActResult(data: dict)
+                }
+                return
+            } catch {}
+
+            // Direct fallback
             if relative {
                 guard let runningApp = AXBridge.resolveApp(name: app, pid: pid) else {
                     throw ExitCode.failure
