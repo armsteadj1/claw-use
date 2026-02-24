@@ -826,70 +826,43 @@ struct Open: ParsableCommand {
     @Argument(help: "App name, bundle ID, or path to .app bundle or executable")
     var app: String
 
-    @Option(name: .long, help: "URL or file to open with the app")
+    @Argument(help: "Additional arguments passed to the binary (only for direct path launches)")
+    var extraArgs: [String] = []
+
+    @Option(name: .long, help: "URL or file to open with the app (registry launches only)")
     var url: String?
 
-    @Flag(name: .long, help: "Wait for app to launch before returning")
+    @Flag(name: .long, help: "Wait for app to launch/exit before returning")
     var wait: Bool = false
 
     func run() throws {
-        let fm = FileManager.default
-
-        // Detect if app is a file path (#5: launch arbitrary binaries)
+        // Detect if app is a file path
         let isPath = app.hasPrefix("/") || app.hasPrefix("./") || app.hasPrefix("~")
         let resolvedPath = isPath ? (app as NSString).expandingTildeInPath : app
 
-        if isPath && fm.fileExists(atPath: resolvedPath) {
-            if resolvedPath.hasSuffix(".app") {
-                // .app bundle — use /usr/bin/open
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                var args = [resolvedPath]
-                if wait { args.insert("-W", at: 0) }
-                if let urlStr = url { args.append(urlStr) }
-                process.arguments = args
-                let errPipe = Foundation.Pipe()
-                process.standardError = errPipe
-                try process.run()
-                process.waitUntilExit()
-                if process.terminationStatus != 0 {
-                    let errorData = errPipe.fileHandleForReading.readDataToEndOfFile()
-                    let errorStr = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-                    fputs("Error: \(errorStr)", stderr)
-                    throw ExitCode.failure
-                }
-            } else {
-                // Bare executable — launch directly
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: resolvedPath)
-                process.arguments = []
-                // Don't block — launch in background
-                process.standardOutput = FileHandle.nullDevice
-                process.standardError = FileHandle.nullDevice
-                try process.run()
-                if wait {
-                    process.waitUntilExit()
-                }
+        if isPath {
+            guard FileManager.default.fileExists(atPath: resolvedPath) else {
+                fputs("Error: File not found: \(resolvedPath)\n", stderr)
+                throw ExitCode.failure
             }
-
-            Thread.sleep(forTimeInterval: 1.0)
-
-            // Try to find the launched app
-            let basename = (resolvedPath as NSString).lastPathComponent
-                .replacingOccurrences(of: ".app", with: "")
-            let workspace = NSWorkspace.shared
-            let runningApp = workspace.runningApplications.first {
-                $0.localizedName?.lowercased().contains(basename.lowercased()) ?? false
+            do {
+                let launched = try PathLauncher.launch(
+                    path: resolvedPath,
+                    extraArgs: extraArgs,
+                    wait: wait
+                )
+                let result: [String: AnyCodable] = [
+                    "success": AnyCodable(true),
+                    "app": AnyCodable(launched.app),
+                    "pid": AnyCodable(launched.pid),
+                    "bundleId": AnyCodable(launched.bundleId),
+                    "path": AnyCodable(launched.path),
+                ]
+                try JSONOutput.print(result, pretty: false)
+            } catch let e as PathLaunchError {
+                fputs("Error: \(e.localizedDescription)\n", stderr)
+                throw ExitCode.failure
             }
-
-            let result: [String: AnyCodable] = [
-                "success": AnyCodable(true),
-                "app": AnyCodable(runningApp?.localizedName ?? basename),
-                "pid": AnyCodable(runningApp?.processIdentifier ?? 0),
-                "bundleId": AnyCodable(runningApp?.bundleIdentifier ?? ""),
-                "path": AnyCodable(resolvedPath),
-            ]
-            try JSONOutput.print(result, pretty: false)
             return
         }
 
