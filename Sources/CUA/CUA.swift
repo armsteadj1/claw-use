@@ -1146,7 +1146,7 @@ struct Pipe: ParsableCommand {
             if verbose { params["verbose"] = AnyCodable(true) }
             let response = try callDaemon(method: "pipe", params: params)
             // In verbose mode, print extra match details to stderr before the normal output
-            if verbose, let dict = response as? [String: Any] {
+            if verbose, let dict = response.result?.value as? [String: Any] {
                 let label = dict["matched_label"] as? String ?? "?"
                 let conf = dict["match_confidence"] as? Double ?? 0
                 var msg = "matched \"\(label)\" (\(String(format: "%.2f", conf)))"
@@ -1355,7 +1355,7 @@ struct Pipe: ParsableCommand {
 
 struct Wait: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Wait for an element to appear or disappear in an app's UI"
+        abstract: "Poll until an element appears in an app's UI"
     )
 
     @Argument(help: "App name (partial match, case-insensitive)")
@@ -1370,8 +1370,8 @@ struct Wait: ParsableCommand {
     @Option(name: .long, help: "Timeout in seconds (default: 10)")
     var timeout: Double = 10
 
-    @Option(name: .long, help: "Poll interval in milliseconds (default: 500)")
-    var interval: Int = 500
+    @Option(name: .long, help: "Poll interval in milliseconds (default: 200)")
+    var interval: Int = 200
 
     @Option(name: .long, help: "App PID")
     var pid: Int32?
@@ -1392,51 +1392,54 @@ struct Wait: ParsableCommand {
             throw ExitCode.failure
         }
 
-        let deadline = Date().addingTimeInterval(timeout)
-        let intervalSec = Double(interval) / 1000.0
         let enricher = Enricher()
 
-        while Date() < deadline {
-            let refMap = RefMap()
-            let snapshot = enricher.snapshot(app: runningApp, refMap: refMap)
-            let allElements = snapshot.content.sections.flatMap { $0.elements }
-
-            if let matchStr = match {
-                // Wait for element to appear
-                let needle = matchStr.lowercased()
-                let found = allElements.contains { el in
-                    let label = (el.label ?? "").lowercased()
-                    let valStr = (el.value?.value as? String ?? "").lowercased()
-                    return label.contains(needle) || valStr.contains(needle)
-                }
-                if found {
-                    print("{\"success\":true,\"matched\":\"\(matchStr)\",\"event\":\"appeared\"}")
-                    return
-                }
+        if let matchStr = match {
+            // Wait for element to appear
+            let result = WaitEngine.wait(match: matchStr, timeout: timeout, intervalMs: interval) {
+                let refMap = RefMap()
+                return enricher.snapshot(app: runningApp, refMap: refMap)
             }
-
-            if let goneStr = matchGone {
-                // Wait for element to disappear
-                let needle = goneStr.lowercased()
-                let found = allElements.contains { el in
-                    let label = (el.label ?? "").lowercased()
-                    let valStr = (el.value?.value as? String ?? "").lowercased()
-                    return label.contains(needle) || valStr.contains(needle)
-                }
-                if !found {
-                    print("{\"success\":true,\"matched\":\"\(goneStr)\",\"event\":\"disappeared\"}")
-                    return
-                }
+            if result.found {
+                let ref = result.ref ?? "?"
+                let elapsed = String(format: "%.1f", result.elapsedSeconds)
+                print("\u{2713} found \"\(matchStr)\" [\(ref)] after \(elapsed)s")
+            } else {
+                print("\u{2717} timeout after \(timeout)s \u{2014} \"\(matchStr)\" not found")
+                throw ExitCode.failure
             }
-
-            Thread.sleep(forTimeInterval: intervalSec)
+            return
         }
 
-        // Timeout
-        let target = match ?? matchGone ?? ""
-        let event = match != nil ? "appear" : "disappear"
-        fputs("Timeout: \"\(target)\" did not \(event) within \(timeout)s\n", stderr)
-        throw ExitCode.failure
+        if let goneStr = matchGone {
+            // Wait for element to disappear — poll until fuzzy match returns nothing
+            let start = Date()
+            let deadline = start.addingTimeInterval(timeout)
+            let intervalSec = Double(interval) / 1000.0
+            let needle = goneStr.lowercased()
+            var gone = false
+
+            while Date() < deadline {
+                let refMap = RefMap()
+                let snapshot = enricher.snapshot(app: runningApp, refMap: refMap)
+                let stillPresent = snapshot.content.sections.flatMap { $0.elements }.contains { el in
+                    WaitEngine.fuzzyScore(needle: needle, element: el, sectionLabel: nil) > 0
+                }
+                if !stillPresent {
+                    gone = true
+                    break
+                }
+                Thread.sleep(forTimeInterval: intervalSec)
+            }
+
+            if gone {
+                let elapsed = String(format: "%.1f", Date().timeIntervalSince(start))
+                print("\u{2713} gone \"\(goneStr)\" after \(elapsed)s")
+            } else {
+                print("\u{2717} timeout after \(timeout)s \u{2014} \"\(goneStr)\" still present")
+                throw ExitCode.failure
+            }
+        }
     }
 }
 
