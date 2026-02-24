@@ -13,6 +13,39 @@ description: Control any macOS application using cua (claw-use) — snapshot UI 
 - macOS Accessibility permission granted (System Settings → Privacy & Security → Accessibility)
 - For Safari web commands: Safari → Develop → Allow Remote Automation
 
+## Setting Up Remote Access (Agent → Human's Mac)
+
+If you need to see and control your human's Mac remotely, run the pairing ceremony:
+
+### On your machine (agent):
+```bash
+cua remote accept
+```
+
+This outputs a command. Send it to your human via your messaging channel:
+> "Hey — run this on your laptop so I can help you: `cua remote pair 100.x.x.x wren-7x4k`"
+
+### Human runs on their Mac:
+```bash
+cua remote pair 100.x.x.x wren-7x4k
+```
+
+### You'll see:
+```
+✅ Paired with james-laptop. Try: cua --remote james-laptop status
+```
+
+### After pairing:
+```bash
+cua --remote james-laptop status
+cua --remote james-laptop list
+cua --remote james-laptop snapshot Safari
+```
+
+**On Tailscale:** `cua remote accept` auto-detects your Tailscale IP and binds only to it. No firewall rules needed — only machines on your Tailscale network can reach the pairing port.
+
+---
+
 ## Core Workflow
 
 The fundamental loop for any task:
