@@ -226,9 +226,10 @@ public struct ActionExecutor {
         )
     }
 
-    // MARK: - Select Row by Index (#7)
+    // MARK: - Select Row by Index (#11)
 
-    /// Select row by index using AXUIElement tree traversal
+    /// Select row by index using AXUIElement tree traversal.
+    /// Fires AXSelect on the Nth AXRow element and returns its label.
     public static func selectRowByIndex(index: Int, app: NSRunningApplication) -> ActionResultOutput {
         let axApp = AXBridge.appElement(for: app)
         let rows = findAllRows(element: axApp, depth: 0, maxDepth: 20)
@@ -236,18 +237,52 @@ public struct ActionExecutor {
             return ActionResultOutput(success: false, error: "Row index \(index) out of range (have \(rows.count) rows)", snapshot: nil)
         }
         let row = rows[index]
-        // Try AXPress first
-        if AXUIElementPerformAction(row, kAXPressAction as CFString) == .success {
+        let rowLabel = readRowLabel(row)
+
+        // Fire AXSelect action
+        if AXUIElementPerformAction(row, "AXSelect" as CFString) == .success {
             Thread.sleep(forTimeInterval: 0.3)
-            return ActionResultOutput(success: true, error: nil, snapshot: nil)
+            return ActionResultOutput(success: true, error: nil, snapshot: nil, label: rowLabel)
         }
-        // Try setting AXSelected
+        // Fall back to setting kAXSelectedAttribute
         let err = AXUIElementSetAttributeValue(row, kAXSelectedAttribute as CFString, true as CFTypeRef)
         if err == .success {
             Thread.sleep(forTimeInterval: 0.3)
-            return ActionResultOutput(success: true, error: nil, snapshot: nil)
+            return ActionResultOutput(success: true, error: nil, snapshot: nil, label: rowLabel)
         }
         return ActionResultOutput(success: false, error: "Failed to select row \(index): AX error \(err.rawValue)", snapshot: nil)
+    }
+
+    /// Extract a human-readable label from an AXRow element by checking title,
+    /// description, and recursively bubbling up text from children.
+    static func readRowLabel(_ element: AXUIElement) -> String? {
+        if let title = AXTreeWalker.readString(element, kAXTitleAttribute), !title.isEmpty {
+            return title
+        }
+        if let desc = AXTreeWalker.readString(element, kAXDescriptionAttribute), !desc.isEmpty {
+            return desc
+        }
+        return bubbleRowLabel(element, depth: 0, maxDepth: 6)
+    }
+
+    private static func bubbleRowLabel(_ element: AXUIElement, depth: Int, maxDepth: Int) -> String? {
+        guard depth < maxDepth else { return nil }
+        let role = AXTreeWalker.readString(element, kAXRoleAttribute) ?? ""
+        if role == "AXStaticText" || role == "AXButton" || role == "AXLink" {
+            if let title = AXTreeWalker.readString(element, kAXTitleAttribute), !title.isEmpty { return title }
+            var val: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &val) == .success,
+               let str = val as? String, !str.isEmpty {
+                return str
+            }
+        }
+        guard let children = AXTreeWalker.readChildren(element) else { return nil }
+        for child in children {
+            if let found = bubbleRowLabel(child, depth: depth + 1, maxDepth: maxDepth) {
+                return found
+            }
+        }
+        return nil
     }
 
     private static func findAllRows(element: AXUIElement, depth: Int, maxDepth: Int) -> [AXUIElement] {

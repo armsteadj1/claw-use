@@ -343,6 +343,12 @@ public enum CompactFormatter {
             }
         }
 
+        if action == "select-row", let idx = data["index"]?.value as? Int {
+            let label = data["label"]?.value as? String
+            let labelPart = label.map { " \"\($0)\"" } ?? ""
+            return "[\(app)] selected row \(idx)\(labelPart)"
+        }
+
         var parts = ["[\(app)] \(action): ok"]
         if let ref = data["matched_ref"]?.value as? String {
             parts.append("ref=\(ref)")
