@@ -11,7 +11,7 @@ struct CUA: ParsableCommand {
         commandName: "cua",
         abstract: "Allowing claws to make better use of any application.",
         version: "0.3.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Wait.self, Assert.self, Daemon.self, Status.self, Web.self, Screenshot.self, ProcessCmd.self, MilestonesCmd.self, RemoteCmd.self, RemoteSenderDaemon.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Wait.self, Assert.self, Daemon.self, Status.self, Web.self, Screenshot.self, ProcessCmd.self, MilestonesCmd.self, RemoteCmd.self, StreamCmd.self, RemoteSenderDaemon.self]
     )
 }
 
@@ -2335,6 +2335,9 @@ struct RemoteAccept: ParsableCommand {
         print("")
         print("Waiting... (Ctrl+C to cancel)")
 
+        // The agent's own RemoteServer URL — sent to the human so their cuad knows where to push streams
+        let myStreamURL = "http://\(displayIP):\(port)"
+
         // Run the temporary pairing server (blocks until paired or Ctrl+C)
         let server = PairingServer()
         let semaphore = DispatchSemaphore(value: 0)
@@ -2345,7 +2348,8 @@ struct RemoteAccept: ParsableCommand {
             port: port,
             code: pairingCode,
             codeExpiry: codeExpiry,
-            myName: myName
+            myName: myName,
+            streamPushTo: myStreamURL
         ) { info in
             pairResult = info
             semaphore.signal()
@@ -2362,14 +2366,17 @@ struct RemoteAccept: ParsableCommand {
         print("")
         print("✅ Paired with \(info.peerName) (\(info.peerIP)).")
         print("   Try: cua --remote \(info.targetName) status")
+        print("   Stream: cua stream read \(info.targetName)")
 
-        // Write remote_targets entry to ~/.cua/config.json
+        // Write remote_targets entry + enable remote server with the shared secret
         do {
             try mergeRemoteTarget(
                 name: info.targetName,
                 url: "http://\(info.peerIP):\(info.peerPort)",
                 secret: info.secret
             )
+            // Enable the agent's own RemoteServer so it can receive stream pushes
+            try mergeRemoteServerConfig(port: port, bind: bind, secret: info.secret)
         } catch {
             fputs("Warning: could not write config: \(error)\n", stderr)
         }
@@ -2384,6 +2391,8 @@ private struct PairInfo {
     let peerPort: Int
     let targetName: String
     let secret: String
+    /// URL the human's cuad should push stream events to (agent's RemoteServer URL).
+    let streamPushTo: String?
 }
 
 private final class PairingServer {
@@ -2397,6 +2406,7 @@ private final class PairingServer {
         code: String,
         codeExpiry: Date,
         myName: String,
+        streamPushTo: String,
         onPaired: @escaping (PairInfo) -> Void
     ) throws {
         let nwPort = NWEndpoint.Port(rawValue: UInt16(port))!
@@ -2424,7 +2434,8 @@ private final class PairingServer {
             conn.start(queue: self.queue)
             self.readRequest(conn: conn, accumulated: Data()) { req in
                 guard let req = req else { conn.cancel(); return }
-                self.handlePair(req: req, conn: conn, code: code, codeExpiry: codeExpiry, myName: myName, onPaired: onPaired)
+                self.handlePair(req: req, conn: conn, code: code, codeExpiry: codeExpiry,
+                                myName: myName, streamPushTo: streamPushTo, onPaired: onPaired)
             }
         }
 
@@ -2442,6 +2453,7 @@ private final class PairingServer {
         code: String,
         codeExpiry: Date,
         myName: String,
+        streamPushTo: String,
         onPaired: @escaping (PairInfo) -> Void
     ) {
         guard req.method == "POST", req.path == "/pair" else {
@@ -2472,7 +2484,8 @@ private final class PairingServer {
         let peerPort = body["my_port"] as? Int    ?? 4567
         let targetName = peerName.components(separatedBy: ".").first ?? peerName
 
-        let resp: [String: Any] = ["secret": secret, "name": myName, "my_port": 4567]
+        // Include stream_push_to so the human's machine knows where to send events
+        let resp: [String: Any] = ["secret": secret, "name": myName, "my_port": 4567, "stream_push_to": streamPushTo]
         sendJSON(conn: conn, status: 200, obj: resp)
 
         didPair = true
@@ -2481,7 +2494,8 @@ private final class PairingServer {
             peerIP: peerIP,
             peerPort: peerPort,
             targetName: targetName,
-            secret: secret
+            secret: secret,
+            streamPushTo: streamPushTo
         )
         onPaired(info)
     }
@@ -2585,6 +2599,32 @@ private func mergeRemoteTarget(name: String, url: String, secret: String) throws
     try outData.write(to: URL(fileURLWithPath: configPath))
 }
 
+/// Merge stream config into ~/.cua/config.json without clobbering other keys.
+private func mergeStreamConfig(pushTo: String, secret: String) throws {
+    let configPath = NSHomeDirectory() + "/.cua/config.json"
+    var configDict: [String: Any] = [:]
+    if let data = FileManager.default.contents(atPath: configPath),
+       let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        configDict = existing
+    }
+    configDict["stream"] = [
+        "enabled": true,
+        "push_to": pushTo,
+        "secret": secret,
+        "flush_interval": 5,
+        "app_levels": [
+            "Safari": 2, "Terminal": 2, "VS Code": 2, "Xcode": 2, "Cursor": 2,
+            "Slack": 1, "Mail": 1,
+            "*": 0,
+        ],
+        "blocked_apps": ["1Password", "Keychain Access", "Messages", "Signal", "WhatsApp", "Telegram"],
+    ] as [String: Any]
+    let dir = NSHomeDirectory() + "/.cua"
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    let outData = try JSONSerialization.data(withJSONObject: configDict, options: [.prettyPrinted, .sortedKeys])
+    try outData.write(to: URL(fileURLWithPath: configPath))
+}
+
 /// Merge remote server config into ~/.cua/config.json without clobbering other keys.
 private func mergeRemoteServerConfig(port: Int, bind: String, secret: String) throws {
     let configPath = NSHomeDirectory() + "/.cua/config.json"
@@ -2677,21 +2717,28 @@ struct RemotePair: ParsableCommand {
         }
 
         let agentName = resp["name"] as? String ?? "agent"
+        let streamPushTo = resp["stream_push_to"] as? String ?? "http://\(peerHost):\(peerPort)"
 
-        // Write remote server config to ~/.cua/config.json (merge)
+        // Write remote server config + stream config to ~/.cua/config.json (merge)
         do {
             try mergeRemoteServerConfig(port: 4567, bind: "tailscale", secret: secret)
+            try mergeStreamConfig(pushTo: streamPushTo, secret: secret)
         } catch {
             fputs("Warning: could not write config: \(error)\n", stderr)
         }
 
-        print("✅ Paired with \(agentName). Your agent can now see your screen.")
-
-        // Prompt restart if cuad is running
-        let sockPath = NSHomeDirectory() + "/.cua/sock"
-        if FileManager.default.fileExists(atPath: sockPath) {
-            print("Run 'cua daemon restart' to apply the new config.")
-        }
+        print("✅ Paired with \(agentName).")
+        print("")
+        print("Stream configured. cuad will start shipping events after restart.")
+        print("Run: cua daemon restart")
+        print("")
+        print("Default app levels:")
+        print("  Safari, Terminal, VS Code, Xcode, Cursor → Level 2 (labels, no values)")
+        print("  Slack, Mail → Level 1 (titles, domains)")
+        print("  Everything else → Level 0 (app names only)")
+        print("  Blocked: 1Password, Keychain Access, Messages, Signal, WhatsApp")
+        print("")
+        print("Edit ~/.cua/config.json to customize.")
     }
 }
 
@@ -3120,5 +3167,145 @@ struct RemoteSenderDaemon: ParsableCommand {
         }
     }
 
+}
+
+// MARK: - stream
+
+struct StreamCmd: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "stream",
+        abstract: "Read privacy-filtered event streams from paired machines",
+        subcommands: [StreamRead.self]
+    )
+}
+
+// MARK: stream read
+
+struct StreamRead: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "read",
+        abstract: "Read the event stream from a paired machine"
+    )
+
+    @Argument(help: "Target name (machine whose stream to read)")
+    var target: String
+
+    @Option(name: .long, help: "Date to read (YYYY-MM-DD, defaults to today)")
+    var date: String?
+
+    @Option(name: .long, help: "Filter by app name")
+    var app: String?
+
+    @Flag(name: .long, help: "Follow new events as they arrive (like tail -f)")
+    var tail: Bool = false
+
+    @Flag(name: .long, help: "Output raw JSONL")
+    var json: Bool = false
+
+    func run() throws {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        let dateStr = date ?? fmt.string(from: Date())
+
+        let path = NSHomeDirectory() + "/.cua/streams/\(target)/\(dateStr).jsonl"
+
+        guard FileManager.default.fileExists(atPath: path) else {
+            fputs("No stream data for '\(target)' on \(dateStr)\n", stderr)
+            fputs("(looking in \(path))\n", stderr)
+            throw ExitCode.failure
+        }
+
+        if tail {
+            printExistingLines(path: path)
+            watchFile(path: path)
+        } else {
+            printExistingLines(path: path)
+        }
+    }
+
+    private func printExistingLines(path: String) {
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        for line in content.components(separatedBy: "\n") where !line.isEmpty {
+            printLine(line)
+        }
+    }
+
+    private func printLine(_ line: String) {
+        if json {
+            print(line)
+            return
+        }
+        guard let data = line.data(using: .utf8),
+              let event = try? JSONDecoder().decode(StreamEvent.self, from: data) else { return }
+        if let appFilter = app, let eventApp = event.app {
+            guard eventApp.lowercased().contains(appFilter.lowercased()) else { return }
+        }
+        print(formatEvent(event))
+    }
+
+    private func formatEvent(_ event: StreamEvent) -> String {
+        let ts = formatTime(event.ts)
+        switch event.type {
+        case "app.activated":
+            return "\(ts)  \(event.app ?? "") activated"
+        case "app.launched":
+            return "\(ts)  \(event.app ?? "") launched"
+        case "app.terminated":
+            return "\(ts)  \(event.app ?? "") terminated"
+        case "app.deactivated":
+            if let dur = event.duration {
+                return "\(ts)  \(event.app ?? "") deactivated (active \(dur)s)"
+            }
+            return "\(ts)  \(event.app ?? "") deactivated"
+        case "tab.switched":
+            let domain = event.domain ?? ""
+            let title = event.title.map { " \"\($0)\"" } ?? ""
+            return "\(ts)  \(event.app ?? "") → \(domain)\(title)"
+        case "window.focused":
+            let title = event.title ?? ""
+            return "\(ts)  \(event.app ?? "") window: \(title)"
+        case "snapshot":
+            return "\(ts)  \(event.app ?? "") snapshot: \(event.summary ?? "")"
+        case "screen.locked":
+            return "\(ts)  Screen locked"
+        case "screen.unlocked":
+            return "\(ts)  Screen unlocked"
+        case "screen.display_sleep":
+            return "\(ts)  Display sleeping"
+        case "screen.display_wake":
+            return "\(ts)  Display woke"
+        default:
+            return "\(ts)  \(event.type)\(event.app.map { " (\($0))" } ?? "")"
+        }
+    }
+
+    private func formatTime(_ iso: String) -> String {
+        let parser = ISO8601DateFormatter()
+        guard let d = parser.date(from: iso) else { return String(iso.prefix(16)) }
+        let out = DateFormatter()
+        out.dateFormat = "HH:mm"
+        return out.string(from: d)
+    }
+
+    private func watchFile(path: String) {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return }
+        handle.seekToEndOfFile()
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: handle.fileDescriptor,
+            eventMask: .write,
+            queue: DispatchQueue.main
+        )
+        source.setEventHandler {
+            let data = handle.availableData
+            guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
+            for line in str.components(separatedBy: "\n") where !line.isEmpty {
+                self.printLine(line)
+            }
+        }
+        source.setCancelHandler { handle.closeFile() }
+        source.resume()
+        RunLoop.main.run()
+    }
 }
 

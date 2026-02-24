@@ -24,6 +24,8 @@ public final class RemoteServer {
     private struct SessionEntry {
         let token: String
         let expiry: Date
+        /// Caller-supplied name used to label JSONL stream files (optional).
+        let name: String?
     }
 
     // MARK: - Properties
@@ -181,6 +183,8 @@ public final class RemoteServer {
             handleAuth(req: req, on: conn)
         case ("POST", "/rpc"):
             handleRPC(req: req, on: conn)
+        case ("POST", "/stream/push"):
+            handleStreamPush(req: req, on: conn)
         default:
             sendJSON(on: conn, status: 404, body: ["error": "not found"])
         }
@@ -248,10 +252,12 @@ public final class RemoteServer {
         }
 
         // Issue session token
+        let clientName = body["name"] as? String
         let token = randomHex(64)
         let tokenEntry = SessionEntry(
             token: token,
-            expiry: Date().addingTimeInterval(TimeInterval(config.tokenTtl))
+            expiry: Date().addingTimeInterval(TimeInterval(config.tokenTtl)),
+            name: clientName
         )
 
         stateLock.lock()
@@ -318,6 +324,77 @@ public final class RemoteServer {
 
         sendRaw(on: conn, status: 200, contentType: "application/json", body: responseData)
         _ = session // suppress unused warning
+    }
+
+    // MARK: - POST /stream/push
+
+    private func handleStreamPush(req: HTTPRequest, on conn: NWConnection) {
+        // Validate Bearer token
+        guard let auth = req.headers["authorization"], auth.hasPrefix("Bearer ") else {
+            sendJSON(on: conn, status: 401, body: ["error": "unauthorized"])
+            return
+        }
+        let token = String(auth.dropFirst("Bearer ".count))
+
+        stateLock.lock()
+        let session = sessions[token]
+        stateLock.unlock()
+
+        guard let session = session, session.expiry > Date() else {
+            sendJSON(on: conn, status: 401, body: ["error": "unauthorized"])
+            return
+        }
+
+        // Determine target name from session (sanitise for use as directory name)
+        let rawName = session.name ?? "unknown"
+        let targetName = rawName
+            .components(separatedBy: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_")).inverted)
+            .joined(separator: "_")
+            .prefix(64)
+            .description
+
+        // Parse NDJSON body — one StreamEvent JSON per line
+        guard let bodyStr = String(data: req.body, encoding: .utf8) else {
+            sendJSON(on: conn, status: 400, body: ["error": "invalid body"])
+            return
+        }
+
+        let lines = bodyStr.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        var received = 0
+
+        if !lines.isEmpty {
+            appendStreamLines(lines, for: targetName)
+            received = lines.count
+        }
+
+        sendJSON(on: conn, status: 200, body: ["received": received])
+    }
+
+    /// Append NDJSON lines to ~/.cua/streams/<targetName>/YYYY-MM-DD.jsonl
+    private func appendStreamLines(_ lines: [String], for targetName: String) {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let dateStr = dateFormatter.string(from: Date())
+
+        let dir = NSHomeDirectory() + "/.cua/streams/\(targetName)"
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: dir) {
+            try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        }
+
+        let path = dir + "/\(dateStr).jsonl"
+        let content = lines.joined(separator: "\n") + "\n"
+        let data = Data(content.utf8)
+
+        if fm.fileExists(atPath: path) {
+            if let handle = FileHandle(forWritingAtPath: path) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                handle.closeFile()
+            }
+        } else {
+            fm.createFile(atPath: path, contents: data)
+        }
     }
 
     // MARK: - UDS Forwarding

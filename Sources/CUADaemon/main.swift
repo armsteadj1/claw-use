@@ -165,6 +165,13 @@ if let remoteConfig = cuaConfig.remote, remoteConfig.enabled, !remoteConfig.secr
     }
 }
 
+// Start event stream shipper if configured
+if let streamConfig = cuaConfig.stream, streamConfig.enabled, !streamConfig.pushTo.isEmpty, !streamConfig.secret.isEmpty {
+    let shipper = EventShipper(config: streamConfig)
+    shipper.start(eventBus: eventBus)
+    log("  event stream shipper: push_to=\(streamConfig.pushTo) flush=\(streamConfig.flushInterval)s")
+}
+
 log("cuad ready (pid \(ProcessInfo.processInfo.processIdentifier))")
 log("  transports: ax, cdp, applescript, safari")
 log("  browser transports: safari, chrome (auto-detect enabled)")

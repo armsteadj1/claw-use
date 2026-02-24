@@ -1,5 +1,51 @@
 import Foundation
 
+// MARK: - Stream Config (sender side: the Mac being observed)
+
+/// Configuration for the privacy-filtered event push stream on the observed Mac.
+public struct StreamConfig: Codable {
+    /// Whether the stream is enabled.
+    public var enabled: Bool
+    /// URL of the agent's RemoteServer to push events to (e.g. "http://100.80.200.51:4567").
+    public var pushTo: String
+    /// Shared HMAC secret (matches the agent's remote.secret).
+    public var secret: String
+    /// Flush interval in seconds (default: 5).
+    public var flushInterval: Int
+    /// Per-app event level (0–3). Use "*" for the default level.
+    public var appLevels: [String: Int]
+    /// App names that produce no events at all.
+    public var blockedApps: [String]
+
+    /// Level for apps not explicitly listed.
+    public var defaultLevel: Int { appLevels["*"] ?? 0 }
+
+    public init(
+        enabled: Bool = false,
+        pushTo: String = "",
+        secret: String = "",
+        flushInterval: Int = 5,
+        appLevels: [String: Int] = ["*": 0],
+        blockedApps: [String] = []
+    ) {
+        self.enabled = enabled
+        self.pushTo = pushTo
+        self.secret = secret
+        self.flushInterval = flushInterval
+        self.appLevels = appLevels
+        self.blockedApps = blockedApps
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case pushTo = "push_to"
+        case secret
+        case flushInterval = "flush_interval"
+        case appLevels = "app_levels"
+        case blockedApps = "blocked_apps"
+    }
+}
+
 // MARK: - Remote Server Config (server side: the Mac being observed)
 
 /// Configuration for the remote HTTP proxy server on the observed Mac.
@@ -72,11 +118,14 @@ public struct CUAConfig: Codable {
     public let remote: RemoteServerConfig?
     /// Named remote targets (client side — the agent machine).
     public let remoteTargets: [String: RemoteTarget]?
+    /// Privacy-filtered event push stream config (sender side — the Mac being observed).
+    public let stream: StreamConfig?
 
     public init(gatewayUrl: String? = nil, gatewayToken: String? = nil, hooksToken: String? = nil,
                 wakeEndpoint: String? = nil, processGroup: ProcessGroupConfig? = nil,
                 eventFile: EventFileConfig? = nil, stableRefs: Bool? = nil,
-                remote: RemoteServerConfig? = nil, remoteTargets: [String: RemoteTarget]? = nil) {
+                remote: RemoteServerConfig? = nil, remoteTargets: [String: RemoteTarget]? = nil,
+                stream: StreamConfig? = nil) {
         self.gatewayUrl = gatewayUrl
         self.gatewayToken = gatewayToken
         self.hooksToken = hooksToken
@@ -86,6 +135,7 @@ public struct CUAConfig: Codable {
         self.stableRefs = stableRefs
         self.remote = remote
         self.remoteTargets = remoteTargets
+        self.stream = stream
     }
 
     enum CodingKeys: String, CodingKey {
@@ -98,6 +148,7 @@ public struct CUAConfig: Codable {
         case stableRefs = "stable_refs"
         case remote
         case remoteTargets = "remote_targets"
+        case stream
     }
 
     /// Default priority event types for the event file feature
