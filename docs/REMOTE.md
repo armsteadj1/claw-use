@@ -4,9 +4,35 @@ cua needs direct access to macOS Accessibility APIs and local Unix domain socket
 
 ---
 
-## The Setup (5 minutes)
+## How It Works
 
-**What you need:** cua installed on the Mac to observe, Tailscale on both machines.
+**Two machines, one secure channel:**
+
+- **Observed Mac** — runs `cuad`. Listens on an HTTP port, locked to your Tailscale network.
+- **Agent machine** — knows a shared secret. Does a quick HMAC handshake, then talks to `cuad` directly over HTTP.
+
+No SSH daemon. No port forwarding. No key management. Just Tailscale (for the encrypted private network) and a shared secret (for application-level auth).
+
+```
+Agent Machine (Mac Mini)             Observed Mac (Laptop)
+┌──────────────────────┐             ┌──────────────────────┐
+│  agent / cua client  │──Tailscale──│  cuad (HTTP :4567)   │
+│                      │   WireGuard │  HMAC auth           │
+│  HMAC-signed request │────────────▶│  runs cua commands   │
+└──────────────────────┘             └──────────────────────┘
+```
+
+**What each layer does:**
+
+| Layer | What it provides |
+|-------|-----------------|
+| Tailscale | Wire encryption (WireGuard), network-level access control — only YOUR devices can reach the port |
+| HMAC handshake | Application-level auth — only the agent with the shared secret can talk to cuad |
+| cuad HTTP API | Command restriction — the agent can only do what cuad exposes. No shell, no filesystem, nothing else. |
+
+---
+
+## Setup (5 minutes)
 
 ### 1. Install Tailscale on both machines
 
@@ -15,127 +41,163 @@ brew install tailscale
 tailscale up
 ```
 
-Both machines should appear in your Tailscale admin console. They'll get stable hostnames (e.g., `james-laptop`, `hedwig-mini`) you can use in SSH commands.
+Both machines appear in your Tailscale console with stable hostnames (e.g., `james-laptop`, `hedwig-mini`).
 
-### 2. Create a dedicated SSH key for the agent
+### 2. Generate a shared secret
 
-Run this on the agent machine:
-
-```bash
-ssh-keygen -t ed25519 -C "hedwig-agent" -f ~/.ssh/hedwig_agent_key
-```
-
-Use a separate key per agent — this lets you revoke access for one agent without touching others.
-
-### 3. Add the key to the laptop with a `command=` restriction
-
-On the Mac being observed, open `~/.ssh/authorized_keys` and add:
-
-```
-command="/usr/local/bin/cua $SSH_ORIGINAL_COMMAND",no-port-forwarding,no-X11-forwarding,no-agent-forwarding ssh-ed25519 AAAA... hedwig-agent
-```
-
-Replace `AAAA...` with the contents of `~/.ssh/hedwig_agent_key.pub`.
-
-The `command=` prefix means a compromised key can only run `cua` — not arbitrary shell commands, no port forwarding, nothing else.
-
-### 4. Test the connection
-
-From the agent machine:
+Run this on either machine — just needs to be the same on both:
 
 ```bash
-ssh -i ~/.ssh/hedwig_agent_key james-laptop status
+openssl rand -hex 32
+# → a3f8c2d1e4b5... (save this)
+```
+
+### 3. Configure the observed Mac
+
+Edit `~/.cua/config.json` on the Mac being observed:
+
+```json
+{
+  "remote": {
+    "enabled": true,
+    "port": 4567,
+    "bind": "tailscale",
+    "secret": "your-shared-secret-here"
+  }
+}
+```
+
+- `"bind": "tailscale"` — cuad only listens on the Tailscale interface. Not reachable from the public internet or your local LAN.
+- `"bind": "localhost"` — local only (for testing)
+- `"bind": "0.0.0.0"` — all interfaces (not recommended; rely on Tailscale ACLs if you do this)
+
+Restart the daemon:
+
+```bash
+cua daemon restart
+```
+
+### 4. Configure the agent machine
+
+Edit `~/.cua/config.json` on the agent machine:
+
+```json
+{
+  "remote_targets": {
+    "james-laptop": {
+      "url": "http://james-laptop:4567",
+      "secret": "your-shared-secret-here"
+    }
+  }
+}
+```
+
+### 5. Test it
+
+```bash
+# From the agent machine
+cua --remote james-laptop status
 # → {"daemon":"running","screen":"unlocked","frontmost":"Safari"}
+
+cua --remote james-laptop list
+cua --remote james-laptop snapshot Safari --format compact
 ```
 
-That's it. The agent now has eyes and hands on the laptop.
+---
+
+## The Handshake
+
+Every session opens with a challenge-response exchange:
+
+```
+Agent → cuad:  GET /handshake
+               ← {challenge: "abc123", expires_in: 30}
+
+Agent → cuad:  POST /auth
+               {sig: HMAC-SHA256(secret, challenge + timestamp)}
+               ← {token: "sess_...", ttl: 3600}
+
+Agent → cuad:  POST /rpc  (all subsequent calls)
+               Authorization: Bearer sess_...
+               {method: "snapshot", params: {app: "Safari"}}
+```
+
+The challenge expires in 30 seconds. The session token lives for 1 hour (configurable). A compromised session token can only speak the cuad RPC protocol — there's no shell, no file access, nothing to escalate to.
 
 ---
 
 ## For the Agent
 
-The agent uses SSH to prefix every cua command. Here's a skill config:
-
-```yaml
-# skill: cua-remote
-# Hedwig (Mac Mini) watching James's laptop via Tailscale SSH
-commands:
-  status:   ssh -i ~/.ssh/hedwig_agent_key james-laptop cua status
-  list:     ssh -i ~/.ssh/hedwig_agent_key james-laptop cua list
-  snapshot: ssh -i ~/.ssh/hedwig_agent_key james-laptop cua snapshot "$APP" --format compact
-  act:      ssh -i ~/.ssh/hedwig_agent_key james-laptop cua act "$APP" "$ACTION" --ref "$REF"
-```
-
-Example agent commands:
+Use the `--remote` flag on any cua command:
 
 ```bash
-ssh -i ~/.ssh/hedwig_agent_key james-laptop cua status
-ssh -i ~/.ssh/hedwig_agent_key james-laptop cua list
-ssh -i ~/.ssh/hedwig_agent_key james-laptop cua snapshot Safari --format compact
-ssh -i ~/.ssh/hedwig_agent_key james-laptop cua act Safari click --ref e4
+cua --remote james-laptop status
+cua --remote james-laptop list
+cua --remote james-laptop snapshot Safari --format compact
+cua --remote james-laptop act Safari click --ref e4
+cua --remote james-laptop screenshot Xcode
 ```
 
-Always use `--format compact` for remote snapshots — it's 5x smaller than the default and cuts SSH round-trip costs significantly.
+Or set it as an environment variable for a session:
+
+```bash
+export CUA_REMOTE=james-laptop
+cua status
+cua snapshot Safari
+```
+
+**OpenClaw skill config:**
+
+```yaml
+name: cua-remote
+description: See and interact with James's laptop via cua remote
+commands:
+  status:    cua --remote james-laptop status
+  list:      cua --remote james-laptop list
+  snapshot:  cua --remote james-laptop snapshot "$APP" --format compact
+  act:       cua --remote james-laptop act "$APP" "$ACTION" --ref "$REF"
+```
+
+Always use `--format compact` for remote snapshots — it's 5× smaller than the default.
 
 ---
 
 ## What the Agent Can See
 
-Access is tiered by privacy level. Configure per-app in cua settings.
+Access is tiered by privacy level. Configure per-app in `~/.cua/config.json`.
 
 | Level | Name | What's Visible |
 |-------|------|----------------|
 | 0 | Status | App names, screen lock state, frontmost app |
 | 1 | Events | App launches/quits, focus changes, screen unlock |
-| 2 | Structure | UI labels, roles, window titles, button names — but NOT field values |
+| 2 | Structure | UI labels, roles, window titles — NOT field values |
 | 3 | Full | Everything: field values, page content, screenshots |
 
 **Recommended defaults:**
 
-- Level 0–1 for general awareness
+- Level 0–1 for ambient awareness
 - Level 2 only for approved work apps (Terminal, Xcode, VS Code, Slack)
-- Level 3 requires explicit per-app consent from the user
-
-The agent can always see which apps are running (Level 0). Reading what's in those apps requires higher levels.
+- Level 3 requires explicit per-app consent
 
 ---
 
-## Sensitive Data
+## Security Notes
 
-Some apps should never be exposed, regardless of level.
+- **Tailscale does the heavy lifting.** WireGuard encryption + your Tailscale ACLs mean the port is invisible to anyone not on your network. The HMAC layer is defense-in-depth.
+- **No shell access.** A compromised session token can only speak the cuad RPC protocol. There's nothing to escalate to.
+- **One secret per observer.** Generate a different secret for each Mac being observed. Rotating one doesn't affect others.
+- **Session tokens expire.** Default 1 hour. Configure shorter in `remote.token_ttl` if needed.
+- **Blocklist sensitive apps.** Configure apps that should never be snapshotted remotely (1Password, banking apps, Messages) in `remote.blocked_apps`.
 
-**Never expose:**
-- Password fields — `AXSecureTextField` values are always redacted, even at Level 3
-- 1Password, Keychain Access
-- Banking apps (Chase, Fidelity, etc.)
-- Messages, Signal, WhatsApp, Telegram
-
-**Implementation pattern:** maintain an app blocklist (never visible) and an app allowlist (explicitly approved). Default everything else to Level 0.
-
+```json
+{
+  "remote": {
+    "enabled": true,
+    "port": 4567,
+    "bind": "tailscale",
+    "secret": "your-secret",
+    "token_ttl": 3600,
+    "blocked_apps": ["1Password", "Keychain Access", "Messages", "Signal"]
+  }
+}
 ```
-# blocklist — always denied
-1Password
-Keychain Access
-Messages
-Signal
-
-# allowlist — approved for Level 2
-Terminal
-Xcode
-Visual Studio Code
-Slack
-```
-
-If an agent tries to snapshot a blocklisted app, cua returns an error: `access denied: app is on blocklist`.
-
----
-
-## Security Checklist
-
-- **Tailscale** — no open ports on the public internet; NAT traversal handled automatically
-- **SSH `command=` restriction** — compromised key can only run `cua`, not arbitrary shell
-- **Separate key per agent** — revoke one agent's access without affecting others
-- **`--format compact`** on all remote snapshot calls — smaller output, faster round-trips
-- **App blocklist** — sensitive apps explicitly denied
-- **Log all remote `cua` calls** with timestamps for auditability
-- **Review Tailscale ACLs** — restrict which machines can reach the laptop if needed
