@@ -9,19 +9,25 @@ import Foundation
 public final class RemoteStore {
     public static let remoteDir = NSHomeDirectory() + "/.cua/remote"
 
+    /// The base directory used by this instance (may differ from the static default).
+    public let baseDir: String
+
     private let sessionsPath: String
     private let configPath: String
     private let sessionsLock = NSLock()
     private var _sessions: [String: RemoteSession] = [:]
     private var _config: RemoteConfig
 
-    public init() {
-        sessionsPath = RemoteStore.remoteDir + "/sessions.json"
-        configPath = RemoteStore.remoteDir + "/config.json"
+    /// Designated initialiser.  Pass a custom `baseDir` to isolate storage (useful in tests).
+    public init(baseDir: String? = nil) {
+        let dir = baseDir ?? RemoteStore.remoteDir
+        self.baseDir = dir
+        sessionsPath = dir + "/sessions.json"
+        configPath = dir + "/config.json"
         _config = RemoteConfig()
 
         let fm = FileManager.default
-        try? fm.createDirectory(atPath: RemoteStore.remoteDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
         // Load config
         let configDecoder = JSONDecoder()
@@ -109,7 +115,7 @@ public final class RemoteStore {
     // MARK: - Snapshot Storage
 
     private func peerDir(_ peerId: String) -> String {
-        RemoteStore.remoteDir + "/" + peerId
+        baseDir + "/" + peerId
     }
 
     private func snapshotsPath(for peerId: String) -> String {

@@ -4,11 +4,11 @@ import Foundation
 import Network
 
 /// Minimal HTTP request parsed from raw TCP data.
-struct HTTPRequest {
-    let method: String
-    let path: String
-    let headers: [String: String]
-    let body: Data
+public struct HTTPRequest {
+    public let method: String
+    public let path: String
+    public let headers: [String: String]
+    public let body: Data
 }
 
 /// HTTP server for the remote-ingest endpoint (receiver / agent-machine side).
@@ -17,24 +17,31 @@ struct HTTPRequest {
 /// - `POST /remote-handshake` – HMAC auth, issues session token (single-use pairing key)
 /// - `POST /remote-ingest`    – receive snapshots from an authenticated sender
 /// - `GET  /remote-ping`      – health check
-final class RemoteHTTPServer {
+public final class RemoteHTTPServer {
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "cuad.remote-http")
-    let store: RemoteStore
+    public let store: RemoteStore
 
     /// Pending one-time pairing keys: peerId -> 32-byte secret.
     /// Cleared on first successful handshake.
     private var pendingKeys: [String: Data] = [:]
     private let pairingLock = NSLock()
 
-    init(store: RemoteStore) {
+    /// Called on the server's dispatch queue once the listener is ready.
+    /// Receives the actual bound port number (useful when port 0 is requested).
+    public var onReady: ((UInt16) -> Void)?
+
+    /// The port the server is actually listening on (set when listener reaches .ready).
+    public private(set) var actualPort: UInt16?
+
+    public init(store: RemoteStore) {
         self.store = store
     }
 
     // MARK: - Lifecycle
 
-    func start(port: UInt16) throws {
-        let nwPort = NWEndpoint.Port(rawValue: port)!
+    public func start(port: UInt16) throws {
+        let nwPort: NWEndpoint.Port = port == 0 ? .any : NWEndpoint.Port(rawValue: port)!
         let params = NWParameters.tcp
         let listener = try NWListener(using: params, on: nwPort)
         self.listener = listener
@@ -43,10 +50,14 @@ final class RemoteHTTPServer {
             self?.handleConnection(conn)
         }
 
-        listener.stateUpdateHandler = { state in
+        listener.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
             switch state {
             case .ready:
-                log("[remote] HTTP server listening on port \(port)")
+                let boundPort = self.listener?.port?.rawValue ?? port
+                self.actualPort = boundPort
+                log("[remote] HTTP server listening on port \(boundPort)")
+                self.onReady?(boundPort)
             case .failed(let error):
                 log("[remote] HTTP server failed: \(error)")
             default:
@@ -57,17 +68,17 @@ final class RemoteHTTPServer {
         listener.start(queue: queue)
     }
 
-    func stop() {
+    public func stop() {
         listener?.cancel()
         listener = nil
     }
 
-    var isRunning: Bool { listener != nil }
+    public var isRunning: Bool { listener != nil }
 
     // MARK: - Pairing Key Management
 
     /// Allocate a fresh one-time pairing key. Returns (peerId, base64Secret).
-    func registerPairingKey() -> (peerId: String, secretBase64: String) {
+    public func registerPairingKey() -> (peerId: String, secretBase64: String) {
         let peerId = UUID().uuidString
         let (secretData, secretBase64) = RemoteCrypto.generateKey()
 
@@ -235,10 +246,27 @@ final class RemoteHTTPServer {
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        guard let record = try? decoder.decode(RemoteSnapshotRecord.self, from: request.body) else {
+        guard var record = try? decoder.decode(RemoteSnapshotRecord.self, from: request.body) else {
             sendJSON(on: connection, status: 400, body: ["error": "invalid snapshot payload"])
             return
         }
+
+        // Server-side: silently drop snapshots from blocked apps (returns 200 with ok:false).
+        let bundleId = record.snapshot.bundleId ?? ""
+        if RemoteScrubber.isBlocked(bundleId: bundleId) {
+            sendJSON(on: connection, status: 200, body: ["ok": false, "blocked": true])
+            return
+        }
+
+        // Server-side scrubbing: blank secure text field values before storage.
+        let scrubbed = RemoteScrubber.scrub(record.snapshot)
+        record = RemoteSnapshotRecord(
+            timestamp: record.timestamp,
+            peerId: record.peerId,
+            peerName: record.peerName,
+            snapshot: scrubbed,
+            appList: record.appList
+        )
 
         store.appendSnapshot(record)
         store.updateSessionLastUsed(session.peerId)

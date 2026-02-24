@@ -2540,15 +2540,8 @@ struct RemoteSenderDaemon: ParsableCommand {
         shouldDisplay: false
     )
 
-    // Hard-blocked bundle IDs — no snapshot taken for these apps
-    private static let blockedBundleIds: Set<String> = [
-        "com.agilebits.onepassword",
-        "com.agilebits.onepassword7",
-        "com.agilebits.onepassword-osx",
-        "com.apple.MobileSMS",
-        "org.whispersystems.signal-desktop",
-        "com.apple.keychainaccess",
-    ]
+    // Hard-blocked bundle IDs — no snapshot taken for these apps (delegated to RemoteScrubber)
+    private static var blockedBundleIds: Set<String> { RemoteScrubber.blockedBundleIds }
 
     func run() throws {
         let stateDir  = NSHomeDirectory() + "/.cua/remote"
@@ -2630,7 +2623,7 @@ struct RemoteSenderDaemon: ParsableCommand {
                     if let snapData = try? JSONOutput.encode(snapResult),
                        let snapshot = try? snapDecoder.decode(AppSnapshot.self, from: snapData) {
 
-                        let scrubbed = RemoteSenderDaemon.scrub(snapshot)
+                        let scrubbed = RemoteScrubber.scrub(snapshot)
                         let record   = RemoteSnapshotRecord(
                             timestamp: Date(),
                             peerId:    state.peerId,
@@ -2663,38 +2656,4 @@ struct RemoteSenderDaemon: ParsableCommand {
         }
     }
 
-    /// Scrub sensitive data from a snapshot before it leaves the sender machine.
-    /// - AXSecureTextField elements: value blanked
-    private static func scrub(_ snapshot: AppSnapshot) -> AppSnapshot {
-        let sections = snapshot.content.sections.map { section in
-            Section(
-                role:  section.role,
-                label: section.label,
-                elements: section.elements.map { element in
-                    if element.role == "secureTextField" || element.role == "AXSecureTextField"
-                        || element.role == "passwordField" {
-                        return Element(
-                            ref: element.ref, role: element.role,
-                            label: element.label, value: AnyCodable(""),
-                            placeholder: element.placeholder,
-                            enabled: element.enabled, focused: element.focused,
-                            selected: element.selected, actions: element.actions
-                        )
-                    }
-                    return element
-                }
-            )
-        }
-        return AppSnapshot(
-            app:      snapshot.app,
-            bundleId: snapshot.bundleId,
-            pid:      snapshot.pid,
-            timestamp: snapshot.timestamp,
-            window:   snapshot.window,
-            meta:     snapshot.meta,
-            content:  ContentTree(summary: snapshot.content.summary, sections: sections),
-            actions:  snapshot.actions,
-            stats:    snapshot.stats
-        )
-    }
 }
