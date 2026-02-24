@@ -1641,6 +1641,31 @@ func makeTestElement(ref: String, role: String, label: String) -> Element {
     #expect(assigner.shouldAssignRef(row) == true)
 }
 
+@Test func axRowExistingLabelNotOverwritten() {
+    let refAssigner = RefAssigner()
+    let refMap = RefMap()
+    let row = RawAXNode(
+        role: "AXRow", roleDescription: nil, title: "Existing Title",
+        value: nil, axDescription: nil, identifier: nil, placeholder: nil,
+        position: nil, size: nil, enabled: true, focused: false, selected: false,
+        url: nil, actions: [], children: [
+            RawAXNode(
+                role: "AXStaticText", roleDescription: nil, title: nil,
+                value: AnyCodable("Child Text"), axDescription: nil, identifier: nil, placeholder: nil,
+                position: nil, size: nil, enabled: nil, focused: nil, selected: nil,
+                url: nil, actions: [], children: [], childCount: 0,
+                domId: nil, domClasses: nil
+            ),
+        ], childCount: 1,
+        domId: nil, domClasses: nil
+    )
+
+    let elements = Grouper.buildElements(from: [row], refAssigner: refAssigner, refMap: refMap)
+    let rowElement = elements.first { $0.role == "row" }
+    #expect(rowElement != nil)
+    #expect(rowElement?.label == "Existing Title")
+}
+
 // #1 + #4: Row label consistency in buildElements
 
 @Test func buildElementsAssignsLabelToRow() {
