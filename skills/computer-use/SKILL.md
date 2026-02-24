@@ -11,7 +11,7 @@ description: Control any macOS application using cua (claw-use) — snapshot UI 
 
 - `cua` CLI installed, `cuad` daemon running (`cua daemon start`)
 - macOS Accessibility permission granted (System Settings → Privacy & Security → Accessibility)
-- For Safari web commands: Safari → Develop → Allow Remote Automation
+- For Safari web commands: Safari → Develop → Allow JavaScript from Apple Events
 
 ## Core Workflow
 
@@ -118,9 +118,20 @@ cua focus "Chrome"
 cua restore Obsidian --launch
 ```
 
+### Wait and Assert
+
+```bash
+# Wait for element to appear (up to N seconds)
+cua wait "Safari" --match "Results" --timeout 10
+
+# Assert element is present (exit 0 = found, exit 1 = not found)
+cua assert "Chrome" --match "Welcome"
+cua assert "Chrome" --match "Welcome" --quiet   # no output, just exit code
+```
+
 ## Safari Web Automation
 
-Full web automation without a browser driver:
+Full web automation without a browser driver. Works even with screen locked.
 
 ```bash
 # List open tabs
@@ -201,6 +212,19 @@ cua events recent        # Debug: recent events
 cua events unsubscribe <id>  # Remove subscription
 ```
 
+## Maintenance
+
+```bash
+# Check current version
+cua --version
+
+# Update to latest version
+cua update
+
+# Check for updates without installing
+cua update --check
+```
+
 ## Raw AX Tree (Advanced)
 
 For debugging or building app-specific enrichers:
@@ -218,3 +242,4 @@ cua raw "Chrome" --pretty
 5. **Always verify** — snapshot after acting to confirm the action took effect.
 6. **`cua status`** tells you everything — daemon health, screen state, CDP connections.
 7. **Safari web commands work alongside AX** — use `web snapshot` for page content, regular `snapshot Safari` for the browser chrome/UI.
+8. **Screen locked?** Use `cua web` commands — they work via AppleScript and don't need a display.

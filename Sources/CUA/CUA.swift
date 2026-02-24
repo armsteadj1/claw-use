@@ -11,7 +11,7 @@ struct CUA: ParsableCommand {
         commandName: "cua",
         abstract: "Allowing claws to make better use of any application.",
         version: "0.3.0",
-        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Wait.self, Assert.self, Daemon.self, Status.self, Web.self, Screenshot.self, ProcessCmd.self, MilestonesCmd.self, RemoteCmd.self, RemoteSenderDaemon.self]
+        subcommands: [List.self, Raw.self, Snapshot.self, Act.self, Open.self, Focus.self, Restore.self, Pipe.self, Wait.self, Assert.self, Daemon.self, Status.self, Web.self, Screenshot.self, ProcessCmd.self, MilestonesCmd.self, RemoteCmd.self, RemoteSenderDaemon.self, Update.self]
     )
 }
 
@@ -2632,4 +2632,209 @@ struct RemoteSenderDaemon: ParsableCommand {
         }
     }
 
+}
+
+// MARK: - Version notice (printed once per process if a newer version is cached)
+
+struct VersionNotice {
+    static let cachePath = NSHomeDirectory() + "/.cua/version-check.json"
+    static let currentVersion = "0.3.0"
+    static let githubRepo = "armsteadj1/claw-use"
+
+    struct Cache: Codable {
+        let checkedAt: Date
+        let latestVersion: String
+        let currentVersion: String
+    }
+
+    /// Print a notice if the cached latest version is newer than the current version.
+    static func printIfNeeded() {
+        guard let cache = readCache() else { return }
+        let latest = normalized(cache.latestVersion)
+        let current = normalized(currentVersion)
+        if latest > current {
+            fputs("⚡ cua v\(latest) available (you have v\(current)). Run `cua update` to upgrade.\n", stderr)
+        }
+    }
+
+    /// Fire a background API check if cache is older than 24 hours.
+    static func checkInBackground() {
+        if let cache = readCache(), Date().timeIntervalSince(cache.checkedAt) < 86400 { return }
+        DispatchQueue.global(qos: .background).async {
+            guard let url = URL(string: "https://api.github.com/repos/\(githubRepo)/releases/latest") else { return }
+            var req = URLRequest(url: url)
+            req.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
+            req.setValue("cua-cli/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+            req.timeoutInterval = 5
+            URLSession.shared.dataTask(with: req) { data, _, _ in
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let tagName = json["tag_name"] as? String else { return }
+                writeCache(latestVersion: tagName)
+            }.resume()
+        }
+    }
+
+    static func writeCache(latestVersion: String) {
+        let cache = Cache(checkedAt: Date(), latestVersion: latestVersion, currentVersion: currentVersion)
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .iso8601
+        if let data = try? enc.encode(cache) {
+            try? data.write(to: URL(fileURLWithPath: cachePath))
+        }
+    }
+
+    static func readCache() -> Cache? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: cachePath)) else { return nil }
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        return try? dec.decode(Cache.self, from: data)
+    }
+
+    static func normalized(_ v: String) -> String {
+        v.hasPrefix("v") ? String(v.dropFirst()) : v
+    }
+}
+
+// MARK: - update
+
+struct Update: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "update",
+        abstract: "Check for the latest version and update if available"
+    )
+
+    @Flag(name: .long, help: "Check for updates without installing")
+    var check: Bool = false
+
+    static let releaseAsset = "cua-macos-universal.tar.gz"
+
+    func run() throws {
+        let current = VersionNotice.normalized(VersionNotice.currentVersion)
+        print("Checking for updates...")
+
+        let (tagName, latest) = try fetchLatestVersion()
+        let normalizedLatest = VersionNotice.normalized(latest)
+
+        if normalizedLatest == current {
+            print("Already up to date (v\(current))")
+            VersionNotice.writeCache(latestVersion: tagName)
+            return
+        }
+
+        print("New version available: v\(normalizedLatest) (you have v\(current))")
+
+        if check {
+            print("Run `cua update` to install.")
+            return
+        }
+
+        let downloadURL = "https://github.com/\(VersionNotice.githubRepo)/releases/download/\(tagName)/\(Update.releaseAsset)"
+        print("Downloading v\(normalizedLatest)...")
+        try downloadAndInstall(from: downloadURL)
+
+        VersionNotice.writeCache(latestVersion: tagName)
+        print("Updated to v\(normalizedLatest).")
+        print("Restart cuad to use the new daemon: cua daemon stop && cua daemon start")
+    }
+
+    func fetchLatestVersion() throws -> (String, String) {
+        guard let url = URL(string: "https://api.github.com/repos/\(VersionNotice.githubRepo)/releases/latest") else {
+            throw UpdateError.invalidResponse
+        }
+        var req = URLRequest(url: url)
+        req.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
+        req.setValue("cua-cli/\(VersionNotice.currentVersion)", forHTTPHeaderField: "User-Agent")
+        req.timeoutInterval = 10
+
+        let sem = DispatchSemaphore(value: 0)
+        var tagName: String?
+        var fetchError: Error?
+
+        URLSession.shared.dataTask(with: req) { data, _, error in
+            defer { sem.signal() }
+            if let error = error { fetchError = error; return }
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tag = json["tag_name"] as? String else {
+                fetchError = UpdateError.invalidResponse; return
+            }
+            tagName = tag
+        }.resume()
+
+        if sem.wait(timeout: .now() + 15) == .timedOut { throw UpdateError.timeout }
+        if let error = fetchError { throw error }
+        guard let tag = tagName else { throw UpdateError.invalidResponse }
+        return (tag, tag)
+    }
+
+    func downloadAndInstall(from urlString: String) throws {
+        let fm = FileManager.default
+
+        // Determine install directory from current binary location
+        let currentExe = CommandLine.arguments[0]
+        let installDir: String
+        let exeDir = (currentExe as NSString).deletingLastPathComponent
+        if exeDir.isEmpty || exeDir == "." {
+            installDir = "/usr/local/bin"
+        } else {
+            installDir = exeDir
+        }
+
+        guard fm.isWritableFile(atPath: installDir) else {
+            fputs("error: no write permission to \(installDir). Try: sudo cua update\n", stderr)
+            throw ExitCode.failure
+        }
+
+        let tmpDir = fm.temporaryDirectory.appendingPathComponent("cua-update-\(UUID().uuidString)")
+        try fm.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmpDir) }
+
+        let assetURL = tmpDir.appendingPathComponent(Update.releaseAsset)
+
+        // Download
+        let sem = DispatchSemaphore(value: 0)
+        var downloadError: Error?
+
+        guard let url = URL(string: urlString) else { throw UpdateError.downloadFailed }
+        URLSession.shared.downloadTask(with: url) { tempURL, _, error in
+            defer { sem.signal() }
+            if let error = error { downloadError = error; return }
+            guard let tempURL = tempURL else { downloadError = UpdateError.downloadFailed; return }
+            try? fm.moveItem(at: tempURL, to: assetURL)
+        }.resume()
+
+        if sem.wait(timeout: .now() + 120) == .timedOut { throw UpdateError.timeout }
+        if let error = downloadError { throw error }
+
+        // Extract
+        let tar = Process()
+        tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        tar.arguments = ["xzf", assetURL.path, "-C", tmpDir.path]
+        try tar.run()
+        tar.waitUntilExit()
+        guard tar.terminationStatus == 0 else { throw UpdateError.extractFailed }
+
+        // Install
+        for binary in ["cua", "cuad"] {
+            let src = tmpDir.appendingPathComponent(binary)
+            let dst = URL(fileURLWithPath: installDir).appendingPathComponent(binary)
+            if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
+            try fm.copyItem(at: src, to: dst)
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dst.path)
+        }
+        print("Installed cua and cuad to \(installDir)")
+    }
+
+    enum UpdateError: Error, CustomStringConvertible {
+        case timeout, invalidResponse, downloadFailed, extractFailed
+        var description: String {
+            switch self {
+            case .timeout: return "Request timed out"
+            case .invalidResponse: return "Invalid response from GitHub API"
+            case .downloadFailed: return "Download failed"
+            case .extractFailed: return "Failed to extract archive"
+            }
+        }
+    }
 }
