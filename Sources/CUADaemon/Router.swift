@@ -109,6 +109,8 @@ final class Router {
             return handleProcessGroupClear(id: request.id)
         case "process.group.status":
             return handleProcessGroupStatus(id: request.id)
+        case "wait":
+            return handleWait(params: params, id: request.id)
         case "milestones.list":
             return handleMilestonesList(id: request.id)
         case "milestones.validate":
@@ -864,6 +866,58 @@ final class Router {
             "issues": AnyCodable(issues.map { AnyCodable($0) }),
         ]
         return JSONRPCResponse(result: AnyCodable(result), id: id)
+    }
+
+    // MARK: - wait
+
+    private func handleWait(params: [String: AnyCodable], id: AnyCodable?) -> JSONRPCResponse {
+        let appName = params["app"]?.value as? String
+        let pid = params["pid"]?.value as? Int
+        let matchStr = params["match"]?.value as? String
+        let timeout = params["timeout"]?.value as? Double ?? 10.0
+        let intervalMs = params["interval"]?.value as? Int ?? 200
+
+        guard matchStr != nil else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "wait requires 'match' parameter"), id: id)
+        }
+
+        guard AXBridge.checkAccessibilityPermission() else {
+            return JSONRPCResponse(error: JSONRPCError(code: -1, message: "Accessibility permission not granted"), id: id)
+        }
+
+        guard let runningApp = resolveApp(name: appName, pid: pid) else {
+            return JSONRPCResponse(error: JSONRPCError(code: -2, message: "App not found"), id: id)
+        }
+
+        let needle = matchStr!
+        let enricher = Enricher()
+
+        let result = WaitEngine.wait(match: needle, timeout: timeout, intervalMs: intervalMs) {
+            let refMap = RefMap()
+            return enricher.snapshot(app: runningApp, refMap: refMap)
+        }
+
+        let elapsed = String(format: "%.1f", result.elapsedSeconds)
+        if result.found {
+            let output: [String: AnyCodable] = [
+                "success": AnyCodable(true),
+                "matched": AnyCodable(needle),
+                "ref": AnyCodable(result.ref),
+                "label": AnyCodable(result.label),
+                "elapsed_s": AnyCodable(result.elapsedSeconds),
+                "event": AnyCodable("appeared"),
+            ]
+            return JSONRPCResponse(result: AnyCodable(output), id: id)
+        } else {
+            let output: [String: AnyCodable] = [
+                "success": AnyCodable(false),
+                "matched": AnyCodable(needle),
+                "elapsed_s": AnyCodable(result.elapsedSeconds),
+                "event": AnyCodable("timeout"),
+                "message": AnyCodable("timeout after \(elapsed)s — \"\(needle)\" not found"),
+            ]
+            return JSONRPCResponse(result: AnyCodable(output), id: id)
+        }
     }
 
     // MARK: - Helpers
