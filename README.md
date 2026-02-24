@@ -213,6 +213,29 @@ while True:
 
 ---
 
+## Remote Use: Agent on One Machine, Mac on Another
+
+cua runs on the machine it observes — but your agent might live somewhere else. Here's how to give a remote agent eyes and hands on a local Mac.
+
+**The pattern:** Install cua on the user's Mac. Connect via Tailscale + SSH. The agent runs `ssh user-mac cua snapshot Safari` and gets back the same structured output as if it were local.
+
+```bash
+# Remote agent on Mac Mini controlling user's laptop over Tailscale
+ssh james-laptop cua status
+ssh james-laptop cua snapshot Safari --format compact
+ssh james-laptop cua act Safari click --ref e4
+```
+
+**Why Tailscale + SSH:**
+- No open ports on the public internet (Tailscale handles NAT traversal)
+- SSH key with `command=` restriction — agent can only run `cua`, nothing else
+- Fast: ~20-50ms round-trip over Tailscale LAN
+- Works even when the laptop screen is locked
+
+→ Full setup guide: [docs/REMOTE.md](docs/REMOTE.md)
+
+---
+
 ## How It Works
 
 cuad runs as a persistent background daemon. CLI commands are thin JSON-RPC clients over a Unix socket (`~/.cua/sock`). The daemon picks the best transport per app, falls back automatically on failure, and caches snapshots to avoid redundant reads.

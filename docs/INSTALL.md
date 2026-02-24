@@ -214,3 +214,15 @@ To uninstall Homebrew tap:
 ```bash
 brew uninstall armsteadj1/tap/cua
 ```
+
+---
+
+## Remote Setup (Agent on One Machine, Mac on Another)
+
+See [REMOTE.md](REMOTE.md) for the full guide.
+
+Quick version:
+1. Install cua on the Mac you want to observe
+2. Install Tailscale on both machines
+3. Create an SSH key for the agent with `command=` restriction
+4. Agent runs: `ssh your-mac cua snapshot Safari`
