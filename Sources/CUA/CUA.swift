@@ -402,6 +402,9 @@ struct Snapshot: ParsableCommand {
     @Flag(name: .long, help: "Pretty print JSON output")
     var pretty: Bool = false
 
+    @Flag(name: .long, help: "Enable stable refs: elements keep the same ref across consecutive snapshots (tracked by AX identifier or role+label fingerprint; disappeared refs tombstoned for 60 s)")
+    var stableRefs: Bool = false
+
     func run() throws {
         // Try daemon
         do {
@@ -409,6 +412,7 @@ struct Snapshot: ParsableCommand {
             if let app = app { params["app"] = AnyCodable(app) }
             if let pid = pid { params["pid"] = AnyCodable(Int(pid)) }
             params["depth"] = AnyCodable(depth)
+            if stableRefs { params["stable_refs"] = AnyCodable(true) }
             let response = try callDaemon(method: "snapshot", params: params)
 
             if let error = response.error {

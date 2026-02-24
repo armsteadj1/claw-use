@@ -448,7 +448,8 @@ public struct Grouper {
                     enabled: node.enabled ?? true,
                     focused: node.focused ?? false,
                     selected: node.selected ?? false,
-                    actions: simplifiedActions
+                    actions: simplifiedActions,
+                    identifier: node.identifier
                 ))
             } else if Pruner.shouldKeep(node) || role == "AXStaticText" || role == "AXHeading" {
                 let textValue: AnyCodable? = (role == "AXStaticText" || role == "AXTextArea" || role == "AXHeading") ? node.value : nil

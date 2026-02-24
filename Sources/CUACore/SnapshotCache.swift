@@ -3,8 +3,12 @@ import Foundation
 // MARK: - Element Identity (for ref stability)
 
 /// Identifies an element across snapshots by its stable properties.
-/// Uses AX identifier (most stable), then role+title, with position-based fallback
-/// for elements that have no title/identifier (e.g., unlabeled rows).
+///
+/// Priority:
+/// 1. When an AX `identifier` is set: matched by `role + identifier`; label/position
+///    changes are ignored (e.g. a progress button whose title updates each frame).
+/// 2. When no identifier: matched by `role + title + positionKey` (positional fallback
+///    for unlabelled rows / cells).
 public struct ElementIdentity: Hashable {
     public let role: String
     public let title: String?
@@ -19,14 +23,37 @@ public struct ElementIdentity: Hashable {
         self.positionKey = positionKey
     }
 
-    /// Build identity from an Element
+    // MARK: Hashable / Equatable — AX identifier takes precedence over label
+
+    public static func == (lhs: ElementIdentity, rhs: ElementIdentity) -> Bool {
+        guard lhs.role == rhs.role else { return false }
+        // Both sides have an AX identifier → match on identifier alone
+        if let lid = lhs.identifier, let rid = rhs.identifier {
+            return lid == rid
+        }
+        // Fall back to title + position fingerprint
+        return lhs.title == rhs.title && lhs.positionKey == rhs.positionKey
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(role)
+        if let id = identifier {
+            // Hash by identifier only (makes label changes transparent)
+            hasher.combine(id)
+        } else {
+            hasher.combine(title)
+            hasher.combine(positionKey)
+        }
+    }
+
+    /// Build identity from an Element, using AX identifier when set.
     public static func from(_ element: Element) -> ElementIdentity {
-        ElementIdentity(role: element.role, title: element.label, identifier: nil)
+        ElementIdentity(role: element.role, title: element.label, identifier: element.identifier)
     }
 
     /// Build identity from an Element with position fallback
     public static func from(_ element: Element, positionKey: String?) -> ElementIdentity {
-        ElementIdentity(role: element.role, title: element.label, identifier: nil, positionKey: positionKey)
+        ElementIdentity(role: element.role, title: element.label, identifier: element.identifier, positionKey: positionKey)
     }
 }
 
@@ -81,7 +108,7 @@ public final class RefStabilityManager {
 
         for (i, element) in elements.enumerated() {
             let posKey: String? = positionKeys.flatMap { $0[safe: i] } ?? nil
-            let identity = ElementIdentity(role: element.role, title: element.label, identifier: nil, positionKey: posKey)
+            let identity = ElementIdentity(role: element.role, title: element.label, identifier: element.identifier, positionKey: posKey)
             seenIdentities.insert(identity)
 
             let ref: String
@@ -111,7 +138,8 @@ public final class RefStabilityManager {
                 enabled: element.enabled,
                 focused: element.focused,
                 selected: element.selected,
-                actions: element.actions
+                actions: element.actions,
+                identifier: element.identifier
             ))
         }
 
@@ -223,53 +251,62 @@ public final class SnapshotCache {
         return entry
     }
 
-    /// Store a snapshot in the cache with ref stabilization.
-    public func put(app: String, snapshot: AppSnapshot, transport: String) -> AppSnapshot {
+    /// Store a snapshot in the cache, optionally applying ref stabilization.
+    /// - Parameters:
+    ///   - stableRefs: When true, element refs are stabilised across consecutive snapshots
+    ///     using AX identifier (if set) or role+label fingerprint.  Tombstoned refs are held
+    ///     for 60 s so elements that temporarily disappear reclaim their original ref.
+    public func put(app: String, snapshot: AppSnapshot, transport: String, stableRefs: Bool = false) -> AppSnapshot {
         lock.lock()
         defer { lock.unlock() }
 
         let key = app.lowercased()
         let ttl = ttlFor(transport: transport)
 
-        // Apply ref stability
-        let manager = refManagers[key] ?? RefStabilityManager()
-        refManagers[key] = manager
+        let finalSnapshot: AppSnapshot
+        if stableRefs {
+            // Apply ref stability — assign / reclaim / tombstone refs
+            let manager = refManagers[key] ?? RefStabilityManager()
+            refManagers[key] = manager
 
-        let allElements = snapshot.content.sections.flatMap { $0.elements }
-        let stabilized = manager.stabilize(elements: allElements)
+            let allElements = snapshot.content.sections.flatMap { $0.elements }
+            let stabilized = manager.stabilize(elements: allElements)
 
-        // Rebuild sections with stabilized refs
-        var elementIndex = 0
-        let newSections = snapshot.content.sections.map { section -> Section in
-            let newElements = section.elements.map { _ -> Element in
-                let el = stabilized[elementIndex]
-                elementIndex += 1
-                return el
+            // Rebuild sections with stabilised refs
+            var elementIndex = 0
+            let newSections = snapshot.content.sections.map { section -> Section in
+                let newElements = section.elements.map { _ -> Element in
+                    let el = stabilized[elementIndex]
+                    elementIndex += 1
+                    return el
+                }
+                return Section(role: section.role, label: section.label, elements: newElements)
             }
-            return Section(role: section.role, label: section.label, elements: newElements)
+
+            let newContent = ContentTree(summary: snapshot.content.summary, sections: newSections)
+            finalSnapshot = AppSnapshot(
+                app: snapshot.app,
+                bundleId: snapshot.bundleId,
+                pid: snapshot.pid,
+                timestamp: snapshot.timestamp,
+                window: snapshot.window,
+                meta: snapshot.meta,
+                content: newContent,
+                actions: snapshot.actions,
+                stats: snapshot.stats
+            )
+        } else {
+            finalSnapshot = snapshot
         }
 
-        let newContent = ContentTree(summary: snapshot.content.summary, sections: newSections)
-        let stabilizedSnapshot = AppSnapshot(
-            app: snapshot.app,
-            bundleId: snapshot.bundleId,
-            pid: snapshot.pid,
-            timestamp: snapshot.timestamp,
-            window: snapshot.window,
-            meta: snapshot.meta,
-            content: newContent,
-            actions: snapshot.actions,
-            stats: snapshot.stats
-        )
-
         entries[key] = CacheEntry(
-            snapshot: stabilizedSnapshot,
+            snapshot: finalSnapshot,
             transport: transport,
             cachedAt: Date(),
             ttl: ttl
         )
 
-        return stabilizedSnapshot
+        return finalSnapshot
     }
 
     /// Invalidate cache for an app
