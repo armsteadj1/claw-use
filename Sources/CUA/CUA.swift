@@ -2268,8 +2268,8 @@ struct RemoteCmd: ParsableCommand {
         commandName: "remote",
         abstract: "Remote access and push-based AX visibility",
         subcommands: [
-            RemoteSetup.self,
             RemoteAccept.self,
+            RemotePair.self,
             RemoteSend.self,
             RemoteStop.self,
             RemoteRevoke.self,
@@ -2280,46 +2280,433 @@ struct RemoteCmd: ParsableCommand {
     )
 }
 
-// MARK: remote accept
+// MARK: remote accept (pairing ceremony)
 
 struct RemoteAccept: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "accept",
-        abstract: "Start receiving AX snapshots from a paired laptop"
+        abstract: "Start pairing ceremony — generates a short code to send to your human"
     )
 
-    @Option(name: .long, help: "HTTP port to listen on")
-    var port: Int = 9876
+    @Option(help: "Bind address: tailscale (default), localhost, 0.0.0.0")
+    var bind: String = "tailscale"
 
-    @Option(name: .long, help: "Snapshot retention duration (e.g. 1d, 7d, 1h)")
-    var retain: String = "1d"
+    @Option(help: "Port to listen on (default: 4567)")
+    var port: Int = 4567
+
+    @Option(help: "Name for this machine (default: hostname)")
+    var name: String?
 
     func run() throws {
-        let params: [String: AnyCodable] = [
-            "port":   AnyCodable(port),
-            "retain": AnyCodable(retain),
-        ]
-        let response = try callDaemon(method: "remote.accept", params: params)
-        if let error = response.error {
-            fputs("Error: \(error.message)\n", stderr)
+        // Determine bind/display address
+        let bindAddr: String
+        let displayIP: String
+        if bind == "tailscale" {
+            if let tsIP = tailscaleIP() {
+                bindAddr = tsIP
+                displayIP = tsIP
+            } else {
+                fputs("Warning: no Tailscale IP found, binding to 0.0.0.0\n", stderr)
+                bindAddr = "0.0.0.0"
+                displayIP = "0.0.0.0"
+            }
+        } else if bind == "localhost" {
+            bindAddr = "127.0.0.1"
+            displayIP = "127.0.0.1"
+        } else {
+            bindAddr = bind
+            displayIP = tailscaleIP() ?? bind
+        }
+
+        // Generate pairing code: 4hex-4hex e.g. "a3f1-9c2b"
+        var codeBytes = [UInt8](repeating: 0, count: 4)
+        _ = SecRandomCopyBytes(kSecRandomDefault, 4, &codeBytes)
+        let pairingCode = String(format: "%02x%02x-%02x%02x",
+                                 codeBytes[0], codeBytes[1], codeBytes[2], codeBytes[3])
+        let codeExpiry = Date().addingTimeInterval(5 * 60)
+
+        let myName = name
+            ?? ProcessInfo.processInfo.hostName.components(separatedBy: ".").first
+            ?? ProcessInfo.processInfo.hostName
+
+        print("🔗 Ready to pair. Send this to your human:")
+        print("")
+        print("   cua remote pair \(displayIP):\(port) \(pairingCode)")
+        print("")
+        print("Waiting... (Ctrl+C to cancel)")
+
+        // Run the temporary pairing server (blocks until paired or Ctrl+C)
+        let server = PairingServer()
+        let semaphore = DispatchSemaphore(value: 0)
+        var pairResult: PairInfo?
+
+        try server.start(
+            bindAddr: bindAddr,
+            port: port,
+            code: pairingCode,
+            codeExpiry: codeExpiry,
+            myName: myName
+        ) { info in
+            pairResult = info
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+        server.stop()
+
+        guard let info = pairResult else {
+            fputs("Error: pairing did not complete\n", stderr)
             throw ExitCode.failure
         }
-        guard let result = response.result,
-              let dict = result.value as? [String: AnyCodable] else {
-            fputs("Error: unexpected response\n", stderr)
-            throw ExitCode.failure
+
+        print("")
+        print("✅ Paired with \(info.peerName) (\(info.peerIP)).")
+        print("   Try: cua --remote \(info.targetName) status")
+
+        // Write remote_targets entry to ~/.cua/config.json
+        do {
+            try mergeRemoteTarget(
+                name: info.targetName,
+                url: "http://\(info.peerIP):\(info.peerPort)",
+                secret: info.secret
+            )
+        } catch {
+            fputs("Warning: could not write config: \(error)\n", stderr)
         }
-        let url   = dict["pairing_url"]?.value as? String ?? ""
-        let peerID = dict["peer_id"]?.value as? String ?? ""
-        print("Remote accept ready. Run on your laptop:")
-        print("")
-        print("  cua remote send '\(url)'")
-        print("")
-        print("Pairing URL : \(url)")
-        print("Peer ID     : \(peerID)")
-        print("Port        : \(port)")
-        print("Retention   : \(retain)")
     }
+}
+
+// MARK: - PairingServer (temporary HTTP server used by cua remote accept)
+
+private struct PairInfo {
+    let peerName: String
+    let peerIP: String
+    let peerPort: Int
+    let targetName: String
+    let secret: String
+}
+
+private final class PairingServer {
+    private var listener: NWListener?
+    private let queue = DispatchQueue(label: "cua.pairing-server", qos: .userInitiated)
+    private var didPair = false
+
+    func start(
+        bindAddr: String,
+        port: Int,
+        code: String,
+        codeExpiry: Date,
+        myName: String,
+        onPaired: @escaping (PairInfo) -> Void
+    ) throws {
+        let nwPort = NWEndpoint.Port(rawValue: UInt16(port))!
+        let listener = try NWListener(using: .tcp, on: nwPort)
+        self.listener = listener
+
+        listener.newConnectionHandler = { [weak self] conn in
+            guard let self = self, !self.didPair else { conn.cancel(); return }
+            // IP-level filtering
+            if let remote = pairingRemoteHost(from: conn.endpoint) {
+                switch bindAddr {
+                case "localhost", "127.0.0.1":
+                    guard remote == "127.0.0.1" || remote == "::1" else {
+                        conn.cancel(); return
+                    }
+                case "0.0.0.0":
+                    break
+                default:
+                    // tailscale or specific IP — require Tailscale range (or loopback)
+                    guard isTailscaleRange(remote) || remote == "127.0.0.1" || remote == "::1" else {
+                        conn.cancel(); return
+                    }
+                }
+            }
+            conn.start(queue: self.queue)
+            self.readRequest(conn: conn, accumulated: Data()) { req in
+                guard let req = req else { conn.cancel(); return }
+                self.handlePair(req: req, conn: conn, code: code, codeExpiry: codeExpiry, myName: myName, onPaired: onPaired)
+            }
+        }
+
+        listener.start(queue: queue)
+    }
+
+    func stop() {
+        listener?.cancel()
+        listener = nil
+    }
+
+    private func handlePair(
+        req: (method: String, path: String, body: Data),
+        conn: NWConnection,
+        code: String,
+        codeExpiry: Date,
+        myName: String,
+        onPaired: @escaping (PairInfo) -> Void
+    ) {
+        guard req.method == "POST", req.path == "/pair" else {
+            sendJSON(conn: conn, status: 404, obj: ["error": "not found"])
+            return
+        }
+
+        guard codeExpiry > Date() else {
+            sendJSON(conn: conn, status: 410, obj: ["error": "code expired"])
+            return
+        }
+
+        guard let body = try? JSONSerialization.jsonObject(with: req.body) as? [String: Any],
+              let receivedCode = body["code"] as? String,
+              receivedCode.lowercased() == code.lowercased()
+        else {
+            sendJSON(conn: conn, status: 401, obj: ["error": "invalid code"])
+            return
+        }
+
+        // Generate 32-byte shared secret
+        var secretBytes = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, 32, &secretBytes)
+        let secret = secretBytes.map { String(format: "%02x", $0) }.joined()
+
+        let peerName = body["my_name"] as? String ?? "unknown"
+        let peerIP   = body["my_ip"]   as? String ?? ""
+        let peerPort = body["my_port"] as? Int    ?? 4567
+        let targetName = peerName.components(separatedBy: ".").first ?? peerName
+
+        let resp: [String: Any] = ["secret": secret, "name": myName, "my_port": 4567]
+        sendJSON(conn: conn, status: 200, obj: resp)
+
+        didPair = true
+        let info = PairInfo(
+            peerName: peerName,
+            peerIP: peerIP,
+            peerPort: peerPort,
+            targetName: targetName,
+            secret: secret
+        )
+        onPaired(info)
+    }
+
+    private func readRequest(
+        conn: NWConnection,
+        accumulated: Data,
+        completion: @escaping ((method: String, path: String, body: Data)?) -> Void
+    ) {
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+            guard let self = self else { completion(nil); return }
+            var buf = accumulated
+            if let d = data { buf.append(d) }
+
+            let sep = Data("\r\n\r\n".utf8)
+            guard let headerEnd = buf.range(of: sep) else {
+                if isComplete || error != nil { completion(nil); return }
+                self.readRequest(conn: conn, accumulated: buf, completion: completion)
+                return
+            }
+
+            let headerData = buf[..<headerEnd.lowerBound]
+            let bodyStart = headerEnd.upperBound
+            guard let headerStr = String(data: headerData, encoding: .utf8) else {
+                completion(nil); return
+            }
+
+            let lines = headerStr.components(separatedBy: "\r\n")
+            guard let requestLine = lines.first else { completion(nil); return }
+            let parts = requestLine.split(separator: " ", maxSplits: 2).map(String.init)
+            guard parts.count >= 2 else { completion(nil); return }
+
+            var headers: [String: String] = [:]
+            for line in lines.dropFirst() {
+                guard !line.isEmpty, let colon = line.firstIndex(of: ":") else { continue }
+                let k = String(line[..<colon]).lowercased().trimmingCharacters(in: .whitespaces)
+                let v = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+                headers[k] = v
+            }
+
+            let contentLength = Int(headers["content-length"] ?? "0") ?? 0
+            let bodySlice = buf[bodyStart...]
+
+            if bodySlice.count >= contentLength {
+                let body = Data(bodySlice.prefix(contentLength))
+                let path = parts[1].components(separatedBy: "?")[0]
+                completion((method: parts[0], path: path, body: body))
+            } else if isComplete || error != nil {
+                completion(nil)
+            } else {
+                self.readRequest(conn: conn, accumulated: buf, completion: completion)
+            }
+        }
+    }
+
+    private func sendJSON(conn: NWConnection, status: Int, obj: [String: Any]) {
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: obj) else {
+            conn.cancel(); return
+        }
+        let statusText: String
+        switch status {
+        case 200: statusText = "OK"
+        case 401: statusText = "Unauthorized"
+        case 404: statusText = "Not Found"
+        case 410: statusText = "Gone"
+        default:  statusText = "Error"
+        }
+        let header = "HTTP/1.1 \(status) \(statusText)\r\n" +
+                     "Content-Type: application/json\r\n" +
+                     "Content-Length: \(bodyData.count)\r\n" +
+                     "Connection: close\r\n\r\n"
+        var response = Data(header.utf8)
+        response.append(bodyData)
+        conn.send(content: response, completion: .contentProcessed { _ in conn.cancel() })
+    }
+}
+
+private func pairingRemoteHost(from endpoint: NWEndpoint) -> String? {
+    if case .hostPort(let host, _) = endpoint {
+        return "\(host)"
+    }
+    return nil
+}
+
+// MARK: - Config merge helpers
+
+/// Merge a remote_targets entry into ~/.cua/config.json without clobbering other keys.
+private func mergeRemoteTarget(name: String, url: String, secret: String) throws {
+    let configPath = NSHomeDirectory() + "/.cua/config.json"
+    var configDict: [String: Any] = [:]
+    if let data = FileManager.default.contents(atPath: configPath),
+       let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        configDict = existing
+    }
+    var targets = configDict["remote_targets"] as? [String: Any] ?? [:]
+    targets[name] = ["url": url, "secret": secret]
+    configDict["remote_targets"] = targets
+    let dir = NSHomeDirectory() + "/.cua"
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    let outData = try JSONSerialization.data(withJSONObject: configDict, options: [.prettyPrinted, .sortedKeys])
+    try outData.write(to: URL(fileURLWithPath: configPath))
+}
+
+/// Merge remote server config into ~/.cua/config.json without clobbering other keys.
+private func mergeRemoteServerConfig(port: Int, bind: String, secret: String) throws {
+    let configPath = NSHomeDirectory() + "/.cua/config.json"
+    var configDict: [String: Any] = [:]
+    if let data = FileManager.default.contents(atPath: configPath),
+       let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        configDict = existing
+    }
+    configDict["remote"] = [
+        "enabled": true,
+        "port": port,
+        "bind": bind,
+        "secret": secret,
+        "token_ttl": 3600,
+        "blocked_apps": ["1Password", "Keychain Access", "Messages", "Signal"],
+    ] as [String: Any]
+    let dir = NSHomeDirectory() + "/.cua"
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    let outData = try JSONSerialization.data(withJSONObject: configDict, options: [.prettyPrinted, .sortedKeys])
+    try outData.write(to: URL(fileURLWithPath: configPath))
+}
+
+// MARK: remote pair
+
+struct RemotePair: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "pair",
+        abstract: "Pair with an agent's machine using the code from `cua remote accept`"
+    )
+
+    @Argument(help: "Host (IP or hostname, optionally with :port) from `cua remote accept` output")
+    var host: String
+
+    @Argument(help: "Pairing code from `cua remote accept` output")
+    var code: String
+
+    func run() throws {
+        let (peerHost, peerPort) = parseHostPort(host, defaultPort: 4567)
+        let myIP   = tailscaleIP() ?? "127.0.0.1"
+        let myName = ProcessInfo.processInfo.hostName
+            .components(separatedBy: ".").first
+            ?? ProcessInfo.processInfo.hostName
+
+        let body: [String: Any] = [
+            "code":    code,
+            "my_ip":   myIP,
+            "my_port": 4567,
+            "my_name": myName,
+        ]
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: body),
+              let url = URL(string: "http://\(peerHost):\(peerPort)/pair") else {
+            fputs("Error: invalid host '\(host)'\n", stderr)
+            throw ExitCode.failure
+        }
+
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.httpMethod = "POST"
+        req.httpBody = bodyData
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let sem = DispatchSemaphore(value: 0)
+        var pairResp: [String: Any]?
+        var pairStatus = 0
+        var pairError: Error?
+
+        URLSession.shared.dataTask(with: req) { data, response, error in
+            defer { sem.signal() }
+            if let error = error { pairError = error; return }
+            pairStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if let data = data {
+                pairResp = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            }
+        }.resume()
+        sem.wait()
+
+        if let error = pairError {
+            fputs("Error: \(error.localizedDescription)\n", stderr)
+            throw ExitCode.failure
+        }
+
+        guard pairStatus == 200, let resp = pairResp else {
+            let msg = pairResp?["error"] as? String ?? "HTTP \(pairStatus)"
+            fputs("Error: pairing failed — \(msg)\n", stderr)
+            throw ExitCode.failure
+        }
+
+        guard let secret = resp["secret"] as? String else {
+            fputs("Error: no secret in pairing response\n", stderr)
+            throw ExitCode.failure
+        }
+
+        let agentName = resp["name"] as? String ?? "agent"
+
+        // Write remote server config to ~/.cua/config.json (merge)
+        do {
+            try mergeRemoteServerConfig(port: 4567, bind: "tailscale", secret: secret)
+        } catch {
+            fputs("Warning: could not write config: \(error)\n", stderr)
+        }
+
+        print("✅ Paired with \(agentName). Your agent can now see your screen.")
+
+        // Prompt restart if cuad is running
+        let sockPath = NSHomeDirectory() + "/.cua/sock"
+        if FileManager.default.fileExists(atPath: sockPath) {
+            print("Run 'cua daemon restart' to apply the new config.")
+        }
+    }
+}
+
+private func parseHostPort(_ hostArg: String, defaultPort: Int) -> (String, Int) {
+    // IPv6 with brackets: [::1]:4567
+    if hostArg.hasPrefix("["), let bracketEnd = hostArg.firstIndex(of: "]") {
+        let host = String(hostArg[hostArg.index(after: hostArg.startIndex)..<bracketEnd])
+        let rest = String(hostArg[bracketEnd...].dropFirst())
+        if rest.hasPrefix(":"), let p = Int(rest.dropFirst()) { return (host, p) }
+        return (host, defaultPort)
+    }
+    // host:port
+    let parts = hostArg.components(separatedBy: ":")
+    if parts.count == 2, let p = Int(parts[1]) { return (parts[0], p) }
+    return (hostArg, defaultPort)
 }
 
 // MARK: remote send
@@ -2735,49 +3122,3 @@ struct RemoteSenderDaemon: ParsableCommand {
 
 }
 
-// MARK: - remote setup
-
-struct RemoteSetup: ParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "setup",
-        abstract: "Generate config snippets and a shared secret for Tailscale remote access"
-    )
-
-    func run() throws {
-        // Generate 32-byte random hex secret
-        var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, 32, &bytes)
-        let secret = bytes.map { String(format: "%02x", $0) }.joined()
-
-        // Detect local Tailscale IP
-        let tsIP = tailscaleIP() ?? "<tailscale-ip>"
-
-        print("""
-        === On the Mac being observed (~/.cua/config.json) ===
-        {
-          "remote": {
-            "enabled": true,
-            "port": 4567,
-            "bind": "tailscale",
-            "secret": "\(secret)",
-            "token_ttl": 3600,
-            "blocked_apps": ["1Password", "Keychain Access", "Messages", "Signal"]
-          }
-        }
-
-        === On the agent machine (~/.cua/config.json) ===
-        {
-          "remote_targets": {
-            "this-machine": {
-              "url": "http://\(tsIP):4567",
-              "secret": "\(secret)"
-            }
-          }
-        }
-
-        Tailscale IP of this machine: \(tsIP)
-        Run: cua daemon restart  (on the observed Mac, after editing config)
-        Then: cua --remote this-machine status  (from the agent machine)
-        """)
-    }
-}
