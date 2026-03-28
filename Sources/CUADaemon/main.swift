@@ -1,5 +1,6 @@
 import Foundation
 import CUACore
+import CUADaemonLib
 
 // MARK: - Configuration
 
@@ -140,6 +141,35 @@ do {
     log("Failed to start server: \(error)")
     removePidFile()
     exit(1)
+}
+
+// Start remote HTTP proxy server if configured
+let cuaConfig = CUAConfig.load()
+if let remoteConfig = cuaConfig.remote, remoteConfig.enabled, !remoteConfig.secret.isEmpty {
+    let remoteServer = RemoteServer(config: remoteConfig)
+    do {
+        try remoteServer.start()
+        let bindDesc: String
+        switch remoteConfig.bind {
+        case "tailscale":
+            let ip = tailscaleIP() ?? "(tailscale not found)"
+            bindDesc = "tailscale \(ip)"
+        case "localhost":
+            bindDesc = "localhost"
+        default:
+            bindDesc = remoteConfig.bind
+        }
+        log("  remote HTTP server: port \(remoteConfig.port) bind=\(bindDesc) ttl=\(remoteConfig.tokenTtl)s")
+    } catch {
+        log("  remote HTTP server: failed to start — \(error)")
+    }
+}
+
+// Start event stream shipper if configured
+if let streamConfig = cuaConfig.stream, streamConfig.enabled, !streamConfig.pushTo.isEmpty, !streamConfig.secret.isEmpty {
+    let shipper = EventShipper(config: streamConfig)
+    shipper.start(eventBus: eventBus)
+    log("  event stream shipper: push_to=\(streamConfig.pushTo) flush=\(streamConfig.flushInterval)s")
 }
 
 log("cuad ready (pid \(ProcessInfo.processInfo.processIdentifier))")
