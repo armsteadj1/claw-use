@@ -4,6 +4,7 @@ import CUACore
 
 /// UDS client that connects to the cuad daemon and sends JSON-RPC requests
 struct DaemonClient {
+    private static var versionCheckDone = false
     static let cuaDir = NSHomeDirectory() + "/.cua"
     static let socketPath = cuaDir + "/sock"
     static let pidFilePath = cuaDir + "/pid"
@@ -11,6 +12,12 @@ struct DaemonClient {
     /// Ensure the daemon is running. If not, start it and wait for readiness.
     /// Shared helper — every CLI command calls this before connecting.
     static func ensureDaemon() throws {
+        // Print version notice once per process (reads from cache — fast, no network)
+        if !versionCheckDone {
+            versionCheckDone = true
+            VersionNotice.printIfNeeded()
+            VersionNotice.checkInBackground()
+        }
         if isDaemonRunning() { return }
         try startDaemon()
         var ready = false
